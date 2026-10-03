@@ -1,0 +1,11 @@
+{
+  "display_name": "ComfyUI Illustration Agent",
+  "js": "index.js",
+  "css": "style.css",
+  "author": "you",
+  "version": "1.0.0",
+  "loading_order": 100,
+  "minimum_client_version": "1.12.0",
+  "homePage": "https://github.com/Doublesubwalfas/comfyui-illustration-agent.git",
+  "auto_update": false
+}

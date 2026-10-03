@@ -1,0 +1,87 @@
+<div id="comfy-agent-settings" class="inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+        <b>ComfyUI Illustration Agent</b>
+        <div class="inline-drawer-icon fa-solid fa-chevron-down down"></div>
+    </div>
+    
+    <div class="inline-drawer-content" style="padding-top: 10px;">
+        <div class="setting-group">
+            <h4>Agent Decision & Context</h4>
+            <label class="checkbox-row"><input type="checkbox" id="cia_enabled" data-extension-name="comfyui_illustration_agent" data-setting="enabled"> Enable Illustrator Agent in this chat</label>
+            
+            <label for="cia_runInterval">Run Interval (0 = manual only)</label>
+            <input type="number" id="cia_runInterval" data-extension-name="comfyui_illustration_agent" data-setting="runInterval" min="0">
+            
+            <label for="cia_promptTemplateId">Active Prompt Template</label>
+            <select id="cia_promptTemplateId" data-extension-name="comfyui_illustration_agent" data-setting="promptTemplateId"></select>
+            
+            <label for="cia_promptConnection">Prompt Connection (Profile name or 'agent default')</label>
+            <input type="text" id="cia_promptConnection" data-extension-name="comfyui_illustration_agent" data-setting="promptConnection">
+            
+            <label class="checkbox-row"><input type="checkbox" id="cia_attachCardAppearance" data-extension-name="comfyui_illustration_agent" data-setting="attachCardAppearance"> Attach Card Appearance (injects first 400 chars of character desc)</label>
+            
+            <label class="checkbox-row"><input type="checkbox" id="cia_sendAvatarReferences" data-extension-name="comfyui_illustration_agent" data-setting="sendAvatarReferences"> Send Avatar References to ComfyUI</label>
+            
+            <label class="checkbox-row"><input type="checkbox" id="cia_exposePromptBeforeSend" data-extension-name="comfyui_illustration_agent" data-setting="exposePromptBeforeSend"> <b>Expose prompt before sending (Review Modal)</b></label>
+        </div>
+
+        <div class="setting-group">
+            <h4>Image Backend (ComfyUI)</h4>
+            <label for="cia_comfyUrl">ComfyUI API URL</label>
+            <input type="text" id="cia_comfyUrl" data-extension-name="comfyui_illustration_agent" data-setting="comfyUrl">
+            
+            <label for="cia_modelClass">Model Class</label>
+            <select id="cia_modelClass" data-extension-name="comfyui_illustration_agent" data-setting="modelClass">
+                <option value="sdxl">SDXL (Base 1024x1024)</option>
+                <option value="sd15">SD 1.5 (Base 512x512)</option>
+            </select>
+            
+            <label for="cia_aspectRatio">Default Aspect Ratio</label>
+            <select id="cia_aspectRatio" data-extension-name="comfyui_illustration_agent" data-setting="aspectRatio">
+                <option value="landscape">Landscape</option>
+                <option value="portrait">Portrait</option>
+                <option value="square">Square</option>
+            </select>
+            
+            <label for="cia_workflow">Workflow JSON (API Format)</label>
+            <textarea id="cia_workflow" data-extension-name="comfyui_illustration_agent" data-setting="workflow" placeholder="Paste ComfyUI API JSON here. Must contain %prompt%..."></textarea>
+            
+            <label for="cia_steps">Sampling Steps (%steps%)</label>
+            <input type="number" id="cia_steps" data-extension-name="comfyui_illustration_agent" data-setting="steps" min="1" max="150">
+            
+            <label for="cia_cfg">CFG Scale (%cfg%)</label>
+            <input type="number" id="cia_cfg" data-extension-name="comfyui_illustration_agent" data-setting="cfg" min="1" max="30" step="0.5">
+            
+            <label for="cia_posDefaults">Connection Positive Defaults</label>
+            <textarea id="cia_posDefaults" data-extension-name="comfyui_illustration_agent" data-setting="posDefaults"></textarea>
+            
+            <label for="cia_negDefaults">Connection Negative Defaults</label>
+            <textarea id="cia_negDefaults" data-extension-name="comfyui_illustration_agent" data-setting="negDefaults"></textarea>
+            
+            <button id="cia_test_connection" class="comfy-btn">Test ComfyUI Connection</button>
+        </div>
+
+        <div class="setting-group">
+            <h4>Style Profile</h4>
+            <label for="cia_activeStyleId">Active Style</label>
+            <select id="cia_activeStyleId" data-extension-name="comfyui_illustration_agent" data-setting="activeStyleId"></select>
+        </div>
+
+        <div class="setting-group">
+            <h4>Backgrounds</h4>
+            <label class="checkbox-row"><input type="checkbox" id="cia_generateBackgrounds" data-extension-name="comfyui_illustration_agent" data-setting="generateBackgrounds"> Allow agent to generate Scene Backgrounds</label>
+            <label class="checkbox-row"><input type="checkbox" id="cia_autoApplyBackground" data-extension-name="comfyui_illustration_agent" data-setting="autoApplyBackground"> Auto-apply generated background to UI</label>
+        </div>
+
+        <div class="setting-group">
+            <h4>Gallery & Storage</h4>
+            <button id="cia_open_gallery" class="comfy-btn">Open Image Gallery</button>
+            <p id="cia_gallery_count" style="font-size: 0.9em; color: var(--SmartThemeQuoteColor); margin-top: 10px;">Total images in global gallery: 0</p>
+            
+            <label class="checkbox-row"><input type="checkbox" id="cia_deleteImageFiles" data-extension-name="comfyui_illustration_agent" data-setting="deleteImageFiles"> Delete physical image files when removing global gallery entries</label>
+            
+            <button id="cia_prune_gallery" class="comfy-btn danger" style="margin-top: 10px;">Prune Global Gallery</button>
+            <button id="cia_clear_chat_gallery" class="comfy-btn danger" style="margin-top: 10px;">Clear Gallery For This Chat</button>
+        </div>
+    </div>
+</div>
