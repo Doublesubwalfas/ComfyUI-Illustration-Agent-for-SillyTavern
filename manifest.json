@@ -1,10 +1,12 @@
 {
-  "name": "comfyui-illustration-agent",
-  "display_name": "Marinara Illustration Agent",
-  "version": "1.0.0",
-  "author": "Doublesubwalfas",
-  "description": "Marinara Engine-style autonomous agent that detects key scenes and generates ComfyUI illustrations automatically.",
+  "display_name": "Illustration Agent",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
   "js": "index.js",
   "css": "style.css",
-  "settings": "settings.html"
+  "author": "Doublesubwalfas",
+  "version": "1.0.1",
+  "homePage": "https://github.com/Doublesubwalfas/comfyui-illustration-agent",
+  "auto_update": true
 }
