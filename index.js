@@ -1,6 +1,3 @@
-import { saveSettingsDebounced, eventSource, event_types } from '../../../../script.js';
-import { extension_settings } from '../../../extensions.js';
-
 const MODULE_NAME = 'comfyui-illustration-agent';
 
 const defaultSettings = {
@@ -27,78 +24,83 @@ async function loadHtmlTemplate() {
     let template = '';
 
     try {
-        // Preferred modern SillyTavern template renderer
         if (typeof context.renderExtensionTemplateAsync === 'function') {
             template = await context.renderExtensionTemplateAsync(`third-party/${MODULE_NAME}`, 'settings');
         }
-    } catch (e) {
-        console.warn(`[${MODULE_NAME}] Template renderer failed, falling back to $.get`, e);
+    } catch {
+        // Fallback if third-party path structure differs
     }
 
-    // Fallback if template renderer couldn't find the folder name
     if (!template) {
-        const folder = import.meta.url.substring(0, import.meta.url.lastIndexOf('/'));
-        template = await $.get(`${folder}/settings.html`);
+        try {
+            const templateUrl = new URL('settings.html', import.meta.url).href;
+            template = await $.get(templateUrl);
+        } catch (e) {
+            console.error(`[${MODULE_NAME}] Failed to load settings.html`, e);
+        }
     }
 
     if (template) {
-        // Append into SillyTavern's extension container
         $('#extensions_settings').append(template);
     }
 }
 
-// 2. Load and reflect settings in inputs
+// 2. Load settings into inputs
 function loadSettings() {
-    extension_settings[MODULE_NAME] = Object.assign({}, defaultSettings, extension_settings[MODULE_NAME] || {});
+    const { extensionSettings } = SillyTavern.getContext();
+    extensionSettings[MODULE_NAME] = Object.assign({}, defaultSettings, extensionSettings[MODULE_NAME] || {});
 
-    $('#ia_auto_enabled').prop('checked', extension_settings[MODULE_NAME].enabled);
-    $('#ia_style_prefix').val(extension_settings[MODULE_NAME].stylePrefix);
-    $('#ia_negative_prompt').val(extension_settings[MODULE_NAME].negativePrompt);
-    $('#ia_lookback').val(extension_settings[MODULE_NAME].lookback);
-    $('#ia_system_prompt').val(extension_settings[MODULE_NAME].systemPrompt);
+    $('#ia_auto_enabled').prop('checked', extensionSettings[MODULE_NAME].enabled);
+    $('#ia_style_prefix').val(extensionSettings[MODULE_NAME].stylePrefix);
+    $('#ia_negative_prompt').val(extensionSettings[MODULE_NAME].negativePrompt);
+    $('#ia_lookback').val(extensionSettings[MODULE_NAME].lookback);
+    $('#ia_system_prompt').val(extensionSettings[MODULE_NAME].systemPrompt);
 }
 
-// 3. Bind UI inputs & click handlers
+// 3. Bind UI inputs & handlers
 function bindUI() {
+    const { extensionSettings, saveSettingsDebounced } = SillyTavern.getContext();
+
     $('#ia_auto_enabled').off('change').on('change', function () {
-        extension_settings[MODULE_NAME].enabled = $(this).is(':checked');
+        extensionSettings[MODULE_NAME].enabled = $(this).is(':checked');
         saveSettingsDebounced();
     });
 
     $('#ia_style_prefix').off('input').on('input', function () {
-        extension_settings[MODULE_NAME].stylePrefix = $(this).val();
+        extensionSettings[MODULE_NAME].stylePrefix = $(this).val();
         saveSettingsDebounced();
     });
 
     $('#ia_negative_prompt').off('input').on('input', function () {
-        extension_settings[MODULE_NAME].negativePrompt = $(this).val();
+        extensionSettings[MODULE_NAME].negativePrompt = $(this).val();
         saveSettingsDebounced();
     });
 
     $('#ia_lookback').off('change').on('change', function () {
-        extension_settings[MODULE_NAME].lookback = Math.max(1, parseInt($(this).val()) || 3);
+        extensionSettings[MODULE_NAME].lookback = Math.max(1, parseInt($(this).val()) || 3);
         saveSettingsDebounced();
     });
 
     $('#ia_system_prompt').off('input').on('input', function () {
-        extension_settings[MODULE_NAME].systemPrompt = $(this).val();
+        extensionSettings[MODULE_NAME].systemPrompt = $(this).val();
         saveSettingsDebounced();
     });
 
     $('#ia_force_generate_btn').off('click').on('click', () => runIllustrationAgent(true));
 }
 
-// 4. Background LLM Evaluator
+// 4. Background Scene Evaluation
 async function runIllustrationAgent(force = false) {
     if (isEvaluating) return;
     const context = SillyTavern.getContext();
-    if (!context || !context.chat || context.chat.length === 0) return;
+    const { extensionSettings } = context;
 
-    if (!force && !extension_settings[MODULE_NAME].enabled) return;
+    if (!context || !context.chat || context.chat.length === 0) return;
+    if (!force && !extensionSettings[MODULE_NAME]?.enabled) return;
 
     isEvaluating = true;
     try {
-        const lookbackCount = extension_settings[MODULE_NAME].lookback;
+        const lookbackCount = extensionSettings[MODULE_NAME].lookback;
         const recentMessages = context.chat.slice(-lookbackCount);
 
         const contextText = recentMessages
@@ -109,7 +111,7 @@ async function runIllustrationAgent(force = false) {
         const charAppearance = activeChar?.data?.description || activeChar?.description || '';
 
         const agentInstruction = `
-${extension_settings[MODULE_NAME].systemPrompt}
+${extensionSettings[MODULE_NAME].systemPrompt}
 
 Character Appearance Reference:
 ${charAppearance ? charAppearance.substring(0, 500) : 'None'}
@@ -141,11 +143,10 @@ Remember: Return pure JSON only with keys "shouldGenerate", "reason", and "promp
         if (force || parsed.shouldGenerate === true) {
             toastr.success(`Triggering Illustration: ${parsed.reason || 'Moment detected'}`, 'Illustrator');
 
-            const fullPrompt = [extension_settings[MODULE_NAME].stylePrefix, parsed.prompt]
+            const fullPrompt = [extensionSettings[MODULE_NAME].stylePrefix, parsed.prompt]
                 .filter(Boolean)
                 .join(', ');
 
-            // Sends directly to ComfyUI / Image Generator
             await context.executeSlashCommands(`/imagine ${fullPrompt}`);
         } else {
             console.log('[Illustration Agent] Decision: No illustration warranted.', parsed.reason);
@@ -158,17 +159,23 @@ Remember: Return pure JSON only with keys "shouldGenerate", "reason", and "promp
     }
 }
 
-// 5. Entry point
+// 5. Initialize once DOM is ready
 jQuery(async () => {
+    const context = SillyTavern.getContext();
+    const { eventSource, eventTypes } = context;
+
     await loadHtmlTemplate();
     loadSettings();
     bindUI();
 
-    eventSource.on(event_types.CHAT_COMPLETION_FINISHED, () => {
-        if (extension_settings[MODULE_NAME]?.enabled) {
-            runIllustrationAgent(false);
-        }
-    });
+    // Event listener for assistant response completions
+    if (eventSource && eventTypes) {
+        eventSource.on(eventTypes.CHAT_COMPLETION_FINISHED, () => {
+            if (context.extensionSettings[MODULE_NAME]?.enabled) {
+                runIllustrationAgent(false);
+            }
+        });
+    }
 
-    console.log('[Illustration Agent] Initialized and injected into UI.');
+    console.log('[Illustration Agent] Initialized successfully.');
 });
