@@ -466,20 +466,67 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
 async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
     const s = SillyTavern.getContext().extensionSettings[MODULE_NAME];
     try {
-        const workflow = JSON.parse(s.comfyWorkflow);
+        // 1. Calculate resolution based on LLM aspect ratio choice
+        let width = 832;
+        let height = 1216; // default portrait
 
-        if (workflow[s.comfyPosNode]) workflow[s.comfyPosNode].inputs.text = positive;
-        if (workflow[s.comfyNegNode]) workflow[s.comfyNegNode].inputs.text = negative;
-        if (workflow[s.comfySeedNode]) workflow[s.comfySeedNode].inputs.seed = Math.floor(Math.random() * 1000000000);
+        if (aspectRatio === 'landscape') {
+            width = 1216;
+            height = 832;
+        } else if (aspectRatio === 'square') {
+            width = 1024;
+            height = 1024;
+        }
 
+        const randomSeed = Math.floor(Math.random() * 1000000000000);
+        let workflow;
+
+        // 2. Check if the user used %macros% in their workflow
+        let rawStr = s.comfyWorkflow;
+        const hasMacros = rawStr.includes('%prompt%') || rawStr.includes('%positive%') || rawStr.includes('%seed%');
+
+        if (hasMacros) {
+            // Safely escape strings for valid JSON insertion
+            const safePositive = JSON.stringify(positive).slice(1, -1);
+            const safeNegative = JSON.stringify(negative).slice(1, -1);
+
+            rawStr = rawStr
+                .replaceAll('%prompt%', safePositive)
+                .replaceAll('%positive%', safePositive)
+                .replaceAll('%negative_prompt%', safeNegative)
+                .replaceAll('%negative%', safeNegative)
+                .replaceAll('"%seed%"', randomSeed)
+                .replaceAll('%seed%', randomSeed)
+                .replaceAll('"%width%"', width)
+                .replaceAll('%width%', width)
+                .replaceAll('"%height%"', height)
+                .replaceAll('%height%', height);
+
+            workflow = JSON.parse(rawStr);
+        } else {
+            // Fallback: Use manual Node ID configuration if no macros were typed
+            workflow = JSON.parse(s.comfyWorkflow);
+            if (workflow[s.comfyPosNode]) workflow[s.comfyPosNode].inputs.text = positive;
+            if (workflow[s.comfyNegNode]) workflow[s.comfyNegNode].inputs.text = negative;
+            if (workflow[s.comfySeedNode]) workflow[s.comfySeedNode].inputs.seed = randomSeed;
+        }
+
+        // 3. Dispatch to ComfyUI /prompt endpoint
         const resp = await fetch(`${s.comfyUrl.replace(/\/+$/, '')}/prompt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt: workflow })
         });
+
+        if (!resp.ok) {
+            const errText = await resp.text();
+            throw new Error(`ComfyUI HTTP ${resp.status}: ${errText}`);
+        }
+
         const data = await resp.json();
         toastr.info(`ComfyUI Prompt Queued (ID: ${data.prompt_id})`, 'Marinara');
 
+        // Record generation metadata
         recordImage({
             id: Date.now() + Math.random().toString(36).substr(2, 4),
             character: SillyTavern.getContext().characters?.[SillyTavern.getContext().characterId]?.name || 'Unknown',
@@ -493,7 +540,7 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
         });
     } catch (e) {
         console.error('[ComfyUI Direct Error]', e);
-        toastr.error('ComfyUI Direct dispatch failed.', 'Marinara');
+        toastr.error(`ComfyUI dispatch failed: ${e.message}`, 'Marinara');
     }
 }
 
