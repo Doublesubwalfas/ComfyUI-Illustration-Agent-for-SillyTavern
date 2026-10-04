@@ -424,3 +424,102 @@
         height: 125px;
     }
 }
+
+/* Lightbox Enlarge Modal */
+#ia_lightbox_modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 95vw;
+    max-width: 1200px;
+    height: 90vh;
+    max-height: 900px;
+    background: rgba(15, 15, 20, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 12px;
+    z-index: 1000000 !important; /* Extremely high z-index to overlay ST menus */
+    box-shadow: 0 15px 50px rgba(0, 0, 0, 0.9);
+    display: flex;
+    flex-direction: column;
+    backdrop-filter: blur(15px);
+    -webkit-backdrop-filter: blur(15px);
+}
+
+.ia-lightbox-header {
+    padding: 12px 18px;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.ia-lightbox-content {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    padding: 16px;
+}
+
+#ia_lightbox_img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain; /* Ensures the image is not squished but fits */
+    border-radius: 6px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+
+.ia-lightbox-footer {
+    padding: 16px;
+    background: rgba(0, 0, 0, 0.5);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.ia-lightbox-desc {
+    font-size: 0.95em;
+    line-height: 1.4em;
+    color: #eee;
+    font-style: italic;
+    background: rgba(255, 255, 255, 0.05);
+    padding: 10px;
+    border-radius: 6px;
+    text-align: center;
+}
+
+.ia-lightbox-actions {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+}
+
+/* Favorite Quick Button on Gallery Cards */
+.ia-card-fav-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: rgba(0,0,0,0.6);
+    color: #fff;
+    border-radius: 50%;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+    transition: transform 0.2s, color 0.2s;
+}
+
+.ia-card-fav-btn:hover {
+    transform: scale(1.15);
+}
+
+.ia-card-fav-btn .fa-solid.fa-heart {
+    color: #e74c3c;
+}

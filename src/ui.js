@@ -9,7 +9,7 @@ import {
 } from './config.js';
 import { getEffectiveComfyUrl } from './comfy.js';
 import { queryAgentLLM, runEvaluation } from './agent.js';
-import { deliverRoleplayImage } from './chat.js';
+import { deliverRoleplayImage, showImageToCharacter } from './chat.js';
 
 export function resetGeneratingIndicator() {
     $('#ia_gallery_bubble').removeClass('is-generating');
@@ -52,16 +52,15 @@ export function showBatchCandidatePicker(results, description, selectCallback) {
     $('#ia_batch_picker_modal').fadeIn(150);
 }
 
-// Live Macro Inspector: Updates Green/Red badges
 function updateMacroBadges() {
     const s = getSettings();
     const schemaText = $('#ia_schema_editor').val() || '';
     const workflowText = $('#ia_comfy_workflow').val() || '';
 
-    // 1. Schema Badges
     const schemaTokens = [
         { name: 'decision', desc: 'Output JSON key for yes/no decision' },
-        { name: 'target', desc: 'Output JSON key for roleplay vs background' },
+        { name: 'illustrations', desc: 'Output JSON Array for multi-gen tasks' },
+        { name: 'type', desc: 'Output JSON key for roleplay vs background' },
         { name: 'description', desc: 'Output JSON key for narrative vision memory' },
         { name: 'prompt', desc: 'Output JSON key for image generation prompt' },
         { name: 'negativePrompt', desc: 'Output JSON key for negative prompt tags' },
@@ -79,7 +78,6 @@ function updateMacroBadges() {
         `);
     });
 
-    // 2. Workflow Badges
     const workflowTokens = [
         { name: '%prompt%', desc: 'Injected image generation tags' },
         { name: '%negative_prompt%', desc: 'Injected negative prompt tags' },
@@ -164,7 +162,7 @@ export function setupUI() {
                     <div id="ia_interval_row" class="ia-row">
                         <label for="ia_trigger_interval"><b>Trigger Interval (For Mode 3):</b></label>
                         <input type="number" id="ia_trigger_interval" class="text_pole" min="1" max="20" value="3">
-                        <small style="opacity: 0.7;">The AI will generate an image every X messages. Example: 3 means every 3rd message.</small>
+                        <small style="opacity: 0.7;">The AI will generate an image every X messages.</small>
                     </div>
 
                     <div class="ia-row">
@@ -186,7 +184,6 @@ export function setupUI() {
                     </div>
                 </div>
 
-                <!-- Custom Resolution Config -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-crop-simple"></i> Resolution (W × H)</div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
@@ -221,10 +218,8 @@ export function setupUI() {
                     </div>
                 </div>
 
-                <!-- ComfyUI Configuration & Presets -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-wand-magic-sparkles"></i> ComfyUI Workflow & Model Inputs</div>
-                    
                     <div class="ia-row">
                         <label><b>Workflow Preset:</b></label>
                         <div class="ia-preset-bar">
@@ -234,12 +229,10 @@ export function setupUI() {
                             <button type="button" id="ia_wf_preset_del_btn" class="menu_button" title="Delete Preset"><i class="fa-solid fa-trash"></i></button>
                         </div>
                     </div>
-
                     <div class="ia-row">
                         <label><b>ComfyUI Host URL:</b></label>
                         <input type="text" id="ia_comfy_url" class="text_pole" placeholder="http://127.0.0.1:8188">
                     </div>
-
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px;">
                         <div>
                             <label><small>Model (%model%)</small></label>
@@ -270,20 +263,16 @@ export function setupUI() {
                             <input type="text" id="ia_comfy_scheduler" class="text_pole" value="normal">
                         </div>
                     </div>
-
                     <div class="ia-row">
                         <label><b>ComfyUI API Workflow (JSON):</b></label>
                         <textarea id="ia_comfy_workflow" class="text_pole" rows="8" style="font-family: monospace; font-size: 0.8em;"></textarea>
                     </div>
-
                     <label style="font-size: 0.8em; opacity: 0.8;"><b>Workflow Macro Status:</b></label>
                     <div id="ia_workflow_macro_badges" class="ia-macro-container"></div>
                 </div>
 
-                <!-- Agent Instructions & Schema Presets -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-file-code"></i> Agent Instructions & Schema Presets</div>
-                    
                     <div class="ia-row">
                         <label><b>Schema Preset:</b></label>
                         <div class="ia-preset-bar">
@@ -293,7 +282,6 @@ export function setupUI() {
                             <button type="button" id="ia_schema_preset_del_btn" class="menu_button" title="Delete Preset"><i class="fa-solid fa-trash"></i></button>
                         </div>
                     </div>
-
                     <div class="ia-row">
                         <label><b>Style Prefix:</b></label>
                         <input type="text" id="ia_style_prefix" class="text_pole">
@@ -302,17 +290,14 @@ export function setupUI() {
                         <label><b>Default Negative Prompt:</b></label>
                         <input type="text" id="ia_default_negative" class="text_pole">
                     </div>
-
                     <div class="ia-row">
                         <label><b>Active Instructions & Schema:</b></label>
                         <textarea id="ia_schema_editor" class="text_pole" rows="11" style="font-family: monospace; font-size: 0.8em;"></textarea>
                     </div>
-
                     <label style="font-size: 0.8em; opacity: 0.8;"><b>Schema Token Validation:</b></label>
                     <div id="ia_schema_macro_badges" class="ia-macro-container"></div>
                 </div>
 
-                <!-- Evaluator LLM API -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-brain"></i> Agent Evaluator LLM</div>
                     <div class="ia-row">
@@ -349,7 +334,6 @@ export function setupUI() {
     const container = $('#extensions_settings').length ? $('#extensions_settings') : $('#extensions_settings2');
     container.append(settingsHtml);
 
-    // Body Modals
     if ($('#ia_gallery_bubble').length === 0) {
         const bodyFloatingHtml = `
         <div id="ia_gallery_bubble" title="Drag anywhere or tap to open gallery">
@@ -363,7 +347,7 @@ export function setupUI() {
                 <div id="ia_close_review" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
             </div>
             <div class="ia-row">
-                <label><b>Narrative Description (Perceived by Character LLM):</b></label>
+                <label><b>Narrative Description:</b></label>
                 <textarea id="ia_rev_desc" class="text_pole" rows="2"></textarea>
             </div>
             <div class="ia-row">
@@ -393,7 +377,6 @@ export function setupUI() {
                 <b><i class="fa-solid fa-images"></i> Choose Image for Roleplay</b>
                 <div id="ia_close_batch_picker" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
             </div>
-            <small style="opacity: 0.8; margin-top: 6px;">Tap the variation you want inserted into the chat. All candidates are saved in the gallery.</small>
             <div id="ia_batch_grid" class="ia-batch-grid"></div>
         </div>
 
@@ -414,6 +397,25 @@ export function setupUI() {
                 <div id="ia_gallery_content" class="ia-gallery-grid"></div>
             </div>
         </div>
+        
+        <!-- Lightbox Enlarge Modal -->
+        <div id="ia_lightbox_modal" style="display: none;">
+            <div class="ia-lightbox-header">
+                <b id="ia_lightbox_title">Image View</b>
+                <div id="ia_close_lightbox" style="cursor: pointer; padding: 4px 10px;"><i class="fa-solid fa-xmark"></i></div>
+            </div>
+            <div class="ia-lightbox-content">
+                <img id="ia_lightbox_img" src="" />
+            </div>
+            <div class="ia-lightbox-footer">
+                <div id="ia_lightbox_desc" class="ia-lightbox-desc"></div>
+                <div class="ia-lightbox-actions">
+                    <button type="button" id="ia_lb_fav_btn" class="menu_button"><i class="fa-regular fa-heart"></i> Favorite</button>
+                    <button type="button" id="ia_lb_show_btn" class="menu_button" style="background: #3498db; color: white;"><i class="fa-solid fa-hand-sparkles"></i> Show to Character</button>
+                    <button type="button" id="ia_lb_dl_btn" class="menu_button" style="background: #2ecc71; color: white;"><i class="fa-solid fa-download"></i> Save</button>
+                </div>
+            </div>
+        </div>
         `;
         $('body').append(bodyFloatingHtml);
     }
@@ -425,8 +427,8 @@ export function setupUI() {
 
 function updateModeHint(mode) {
     const hints = {
-        mode1: 'Evaluates recent turns for photo actions, physical shifts, and background transitions.',
-        mode2: 'Trigger-word driven: fires ONLY if {image} (selfies/devices) or {scene} (action without background) are present. Tags are auto-cleaned.',
+        mode1: 'Evaluates recent turns for photo actions, physical shifts, and background transitions. Can output multiple images simultaneously.',
+        mode2: 'Trigger-word driven: fires ONLY if {image} (selfies/devices) or {scene} (action without background) are present.',
         mode3: 'Bypasses the thinking step: unconditionally generates image prompts every X assistant messages.'
     };
     $('#ia_mode_hint').text(hints[mode] || '');
@@ -442,7 +444,6 @@ function bindSettingsEvents() {
     const s = getSettings();
     $('#ia_drawer_content').on('click', (e) => e.stopPropagation());
 
-    // Populate Presets
     refreshPresetDropdowns();
 
     $('#ia_enabled').prop('checked', !!s.enabled).on('change', function () { s.enabled = $(this).is(':checked'); saveSettings(); });
@@ -450,7 +451,6 @@ function bindSettingsEvents() {
     $('#ia_agent_mode').val(s.agentMode || 'mode1').on('change', function () {
         s.agentMode = $(this).val();
         updateModeHint(s.agentMode);
-        // Switch schema preset automatically if on default modes
         if (s.agentMode === 'mode1' && s.schemaPresets['Mode 1: Full Autonomous (Doublesub)']) {
             switchSchemaPreset('Mode 1: Full Autonomous (Doublesub)');
         } else if (s.agentMode === 'mode2' && s.schemaPresets['Mode 2: Tag Triggered ({image} & {scene})']) {
@@ -462,11 +462,7 @@ function bindSettingsEvents() {
     });
     updateModeHint(s.agentMode || 'mode1');
 
-    $('#ia_mode2_injection').val(s.mode2InjectionText).on('input', function() {
-        s.mode2InjectionText = $(this).val();
-        saveSettings();
-    });
-
+    $('#ia_mode2_injection').val(s.mode2InjectionText).on('input', function() { s.mode2InjectionText = $(this).val(); saveSettings(); });
     $('#ia_delivery_mode').val(s.deliveryMode || 'attached').on('change', function () { s.deliveryMode = $(this).val(); saveSettings(); });
     $('#ia_trigger_interval').val(s.triggerInterval || 3).on('change', function () { s.triggerInterval = Math.max(1, parseInt($(this).val()) || 3); saveSettings(); });
     $('#ia_pipeline_phase').val(s.pipelinePhase).on('change', function () { s.pipelinePhase = $(this).val(); saveSettings(); });
@@ -477,11 +473,7 @@ function bindSettingsEvents() {
     $('#ia_style_prefix').val(s.stylePrefix).on('input', function () { s.stylePrefix = $(this).val(); saveSettings(); });
     $('#ia_default_negative').val(s.defaultNegative).on('input', function () { s.defaultNegative = $(this).val(); saveSettings(); });
 
-    $('#ia_schema_editor').val(s.activeSchemaText).on('input', function () {
-        s.activeSchemaText = $(this).val();
-        updateMacroBadges();
-        saveSettings();
-    });
+    $('#ia_schema_editor').val(s.activeSchemaText).on('input', function () { s.activeSchemaText = $(this).val(); updateMacroBadges(); saveSettings(); });
 
     $('#ia_res_port_w').val(s.resPortraitW).on('change', function () { s.resPortraitW = parseInt($(this).val()) || 832; saveSettings(); });
     $('#ia_res_port_h').val(s.resPortraitH).on('change', function () { s.resPortraitH = parseInt($(this).val()) || 1216; saveSettings(); });
@@ -502,11 +494,7 @@ function bindSettingsEvents() {
     $('#ia_comfy_scheduler').val(s.comfyScheduler).on('input', function () { s.comfyScheduler = $(this).val(); saveSettings(); });
     $('#ia_comfy_url').val(s.comfyUrl).on('input', function () { s.comfyUrl = $(this).val(); saveSettings(); });
 
-    $('#ia_comfy_workflow').val(s.activeWorkflowText).on('input', function () {
-        s.activeWorkflowText = $(this).val();
-        updateMacroBadges();
-        saveSettings();
-    });
+    $('#ia_comfy_workflow').val(s.activeWorkflowText).on('input', function () { s.activeWorkflowText = $(this).val(); updateMacroBadges(); saveSettings(); });
 
     $('#ia_llm_provider').val(s.llmProvider).on('change', function () {
         s.llmProvider = $(this).val();
@@ -520,9 +508,10 @@ function bindSettingsEvents() {
     $('#ia_manual_eval_btn').on('click', () => runEvaluation(true));
     $('#ia_open_gallery_btn').on('click', openGallery);
     $('#ia_win_min_btn').on('click', () => { $('#ia_gallery_modal').fadeOut(150); $('#ia_gallery_bubble').fadeIn(200); });
-    $('#ia_win_close_btn').on('click', () => { $('#ia_gallery_modal').fadeOut(150); $('#ia_gallery_bubble').fadeIn(200); });
+    $('#ia_win_close_btn').on('click', () => { $('#ia_gallery_modal').fadeOut(150); });
     $('#ia_close_review, #ia_rev_cancel').on('click', () => $('#ia_review_modal').fadeOut(150));
     $('#ia_close_batch_picker').on('click', () => $('#ia_batch_picker_modal').fadeOut(150));
+    $('#ia_close_lightbox').on('click', () => $('#ia_lightbox_modal').fadeOut(150));
     $('#ia_gallery_flat_toggle').on('change', () => renderGalleryContent());
 
     // Diagnostic Handlers
@@ -555,34 +544,25 @@ function bindSettingsEvents() {
         }
     });
 
-    // Preset CRUD Handlers
-    $('#ia_schema_preset_select').on('change', function () {
-        switchSchemaPreset($(this).val());
-    });
+    // Preset Handlers
+    $('#ia_schema_preset_select').on('change', function () { switchSchemaPreset($(this).val()); });
     $('#ia_schema_preset_save_btn').on('click', () => saveCurrentSchemaPreset());
     $('#ia_schema_preset_add_btn').on('click', () => addNewSchemaPreset());
     $('#ia_schema_preset_del_btn').on('click', () => deleteCurrentSchemaPreset());
-
-    $('#ia_workflow_preset_select').on('change', function () {
-        switchWorkflowPreset($(this).val());
-    });
+    $('#ia_workflow_preset_select').on('change', function () { switchWorkflowPreset($(this).val()); });
     $('#ia_wf_preset_save_btn').on('click', () => saveCurrentWorkflowPreset());
     $('#ia_wf_preset_add_btn').on('click', () => addNewWorkflowPreset());
     $('#ia_wf_preset_del_btn').on('click', () => deleteCurrentWorkflowPreset());
 }
 
-// Preset CRUD Functions
 function refreshPresetDropdowns() {
     const s = getSettings();
-
-    // Schema Dropdown
     const $sSel = $('#ia_schema_preset_select').empty();
     Object.keys(s.schemaPresets).forEach(name => {
         $sSel.append(`<option value="${name}">${name}</option>`);
     });
     $sSel.val(s.selectedSchemaPreset);
 
-    // Workflow Dropdown
     const $wSel = $('#ia_workflow_preset_select').empty();
     Object.keys(s.workflowPresets).forEach(name => {
         $wSel.append(`<option value="${name}">${name}</option>`);
@@ -744,6 +724,61 @@ function openGallery() {
     $('#ia_gallery_modal').fadeIn(200);
 }
 
+function toggleFavorite(id) {
+    const s = getSettings();
+    const item = s.gallery.find(r => r.id === id);
+    if (item) {
+        item.favorite = !item.favorite;
+        saveSettings();
+        renderGalleryContent(window._iaLastFilterChar, window._iaLastFilterType);
+    }
+}
+
+async function downloadImageLocal(url, filename) {
+    try {
+        toastr.info('Downloading image...', 'Doublesub');
+        const response = await fetch(url);
+        const blob = await response.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename || 'illustration.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+    } catch (e) {
+        toastr.error('Failed to download image', 'Doublesub');
+    }
+}
+
+function openLightbox(record) {
+    const displayUrl = record.url && record.url.startsWith('ia_bg_') ? `/backgrounds/${record.url}` : (record.url || record.cleanUrl);
+    
+    $('#ia_lightbox_img').attr('src', displayUrl);
+    $('#ia_lightbox_title').text(record.character || 'Illustration');
+    $('#ia_lightbox_desc').text(record.description || record.reason || 'No description provided.');
+    
+    const $favBtn = $('#ia_lb_fav_btn');
+    $favBtn.html(record.favorite ? '<i class="fa-solid fa-heart" style="color:#e74c3c;"></i> Favorited' : '<i class="fa-regular fa-heart"></i> Favorite');
+    $favBtn.off('click').on('click', () => {
+        toggleFavorite(record.id);
+        $favBtn.html(record.favorite ? '<i class="fa-solid fa-heart" style="color:#e74c3c;"></i> Favorited' : '<i class="fa-regular fa-heart"></i> Favorite');
+    });
+
+    $('#ia_lb_dl_btn').off('click').on('click', () => {
+        const dName = record.type === 'background' ? `bg_${record.date}.png` : `illustration_${record.character}_${record.date}.png`;
+        downloadImageLocal(displayUrl, dName);
+    });
+
+    $('#ia_lb_show_btn').off('click').on('click', async () => {
+        $('#ia_lightbox_modal').fadeOut(150);
+        $('#ia_gallery_modal').fadeOut(150);
+        await showImageToCharacter(record.url, record.description);
+    });
+
+    $('#ia_lightbox_modal').fadeIn(200);
+}
+
 function renderGalleryNav() {
     const $nav = $('#ia_gallery_nav').empty();
     const db = getGalleryDb();
@@ -753,6 +788,9 @@ function renderGalleryNav() {
     $nav.append(`
         <div class="ia-nav-filter" data-filter="all" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;">
             <i class="fa-solid fa-layer-group"></i> All Media
+        </div>
+        <div class="ia-nav-filter" data-filter="favorites" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;">
+            <i class="fa-solid fa-heart" style="color:#e74c3c;"></i> Favorites
         </div>
         <div class="ia-nav-filter" data-filter="background" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;">
             <i class="fa-solid fa-mountain-sun"></i> Backgrounds
@@ -767,12 +805,17 @@ function renderGalleryNav() {
     $('.ia-nav-filter, .ia-nav-char').off('click').on('click', function () {
         $('.ia-nav-filter, .ia-nav-char').css('background', 'transparent');
         $(this).css('background', 'rgba(255, 255, 255, 0.15)');
-        if ($(this).hasClass('ia-nav-filter')) renderGalleryContent(null, $(this).data('filter'));
-        else renderGalleryContent($(this).data('char'), null);
+        
+        let type = $(this).data('filter');
+        let char = $(this).data('char');
+        renderGalleryContent(char, type);
     });
 }
 
 function renderGalleryContent(filterChar = null, filterType = null) {
+    window._iaLastFilterChar = filterChar;
+    window._iaLastFilterType = filterType;
+
     const $grid = $('#ia_gallery_content').empty();
     const isFlat = $('#ia_gallery_flat_toggle').is(':checked');
     let records = [...getGalleryDb()];
@@ -780,35 +823,48 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     if (!isFlat) {
         if (filterChar) records = records.filter(r => r.character === filterChar);
         if (filterType === 'background') records = records.filter(r => r.type === 'background');
+        if (filterType === 'favorites') records = records.filter(r => r.favorite);
     }
 
     if (records.length === 0) {
-        $grid.append(`<div style="opacity: 0.6; padding: 20px; grid-column: 1 / -1; text-align: center;">No media recorded yet.</div>`);
+        $grid.append(`<div style="opacity: 0.6; padding: 20px; grid-column: 1 / -1; text-align: center;">No media found.</div>`);
         return;
     }
 
     records.forEach(r => {
-        const displayUrl = r.url || r.cleanUrl;
-        const imageMarkup = displayUrl ? `<img src="${displayUrl}" loading="lazy" />` : `<div style="background: #111; height: 160px; display: flex; align-items: center; justify-content: center;"><i class="fa-solid fa-image"></i></div>`;
+        const displayUrl = r.url && r.url.startsWith('ia_bg_') ? `/backgrounds/${r.url}` : (r.url || r.cleanUrl);
+        const imageMarkup = displayUrl ? `<img src="${displayUrl}" loading="lazy" class="ia-clickable-img" />` : `<div style="background: #111; height: 160px; display: flex; align-items: center; justify-content: center;"><i class="fa-solid fa-image"></i></div>`;
         const tagBadge = r.type === 'background' ? `<span style="background: #e67e22; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.72em;">BG</span>` : `<span style="background: #3498db; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.72em;">Photo</span>`;
+        const heartClass = r.favorite ? "fa-solid fa-heart" : "fa-regular fa-heart";
 
         const $card = $(`
             <div class="ia-card">
-                ${imageMarkup}
+                <div style="position:relative; width:100%;">
+                    ${imageMarkup}
+                    <div class="ia-card-fav-btn" title="Toggle Favorite"><i class="${heartClass}"></i></div>
+                </div>
                 <div class="ia-card-meta">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <b style="font-size: 0.88em;">${r.character}</b>
                         ${tagBadge}
                     </div>
-                    <div class="ia-desc-text">${r.description || r.reason || 'No description'}</div>
+                    <div class="ia-desc-text" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${r.description || r.reason || 'No description'}</div>
                     <div class="ia-card-actions">
                         ${r.type === 'background'
                             ? `<button type="button" class="ia-card-btn ia-set-bg-btn"><i class="fa-solid fa-mountain-sun"></i> Set BG</button>`
-                            : `<button type="button" class="ia-card-btn ia-insert-roleplay-btn"><i class="fa-solid fa-comment-medical"></i> Insert to Chat</button>`}
+                            : `<button type="button" class="ia-card-btn ia-insert-roleplay-btn"><i class="fa-solid fa-comment-medical"></i> Insert</button>`}
+                        <button type="button" class="ia-card-btn ia-expand-btn"><i class="fa-solid fa-expand"></i> View</button>
                     </div>
                 </div>
             </div>
         `);
+
+        $card.find('.ia-clickable-img, .ia-expand-btn').on('click', () => openLightbox(r));
+        
+        $card.find('.ia-card-fav-btn').on('click', (e) => {
+            e.stopPropagation();
+            toggleFavorite(r.id);
+        });
 
         $card.find('.ia-set-bg-btn').on('click', async (e) => {
             e.stopPropagation();
@@ -822,7 +878,7 @@ function renderGalleryContent(filterChar = null, filterType = null) {
             e.stopPropagation();
             await deliverRoleplayImage(r.url, r.description);
             $('#ia_gallery_modal').fadeOut(150);
-            $('#ia_gallery_bubble').fadeIn(200); // Optional: bring bubble back after insert
+            $('#ia_gallery_bubble').fadeIn(200);
         });
 
         $grid.append($card);
