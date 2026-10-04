@@ -35,42 +35,56 @@
     gap: 8px;
 }
 
-/* Floating Action Bubble (Minimized Gallery) */
+/* Authentic Android Floating Chat Head / Bubble */
 #ia_gallery_bubble {
     position: fixed;
-    bottom: 24px;
-    right: 24px;
+    top: 60%;
+    right: 12px;
     width: 52px;
     height: 52px;
     border-radius: 50%;
     background: linear-gradient(135deg, #ff7675, #d63031);
     color: #fff;
-    display: none;
+    display: flex;
     align-items: center;
     justify-content: center;
     font-size: 1.3em;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
-    cursor: pointer;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.6);
+    cursor: grab;
     z-index: 99998;
-    transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
     user-select: none;
+    touch-action: none;
+    transform: translate3d(0, 0, 0);
 }
 
-#ia_gallery_bubble:hover {
-    transform: scale(1.1);
+#ia_gallery_bubble:active {
+    cursor: grabbing;
+    transform: scale(0.95);
 }
 
 #ia_gallery_bubble_badge {
     position: absolute;
-    top: -4px;
-    right: -4px;
+    top: -2px;
+    right: -2px;
     background: #2d3436;
     color: #fff;
     font-size: 0.55em;
     font-weight: bold;
     padding: 2px 6px;
     border-radius: 10px;
-    border: 1px solid rgba(255,255,255,0.3);
+    border: 1px solid rgba(255,255,255,0.4);
+}
+
+/* Pulsing radar effect while generating */
+#ia_gallery_bubble.is-generating {
+    background: linear-gradient(135deg, #0984e3, #6c5ce7);
+    animation: ia-pulse 1.4s infinite ease-in-out;
+}
+
+@keyframes ia-pulse {
+    0% { box-shadow: 0 0 0 0 rgba(108, 92, 231, 0.7); }
+    70% { box-shadow: 0 0 0 16px rgba(108, 92, 231, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(108, 92, 231, 0); }
 }
 
 /* Floating Window Gallery */
@@ -80,9 +94,9 @@
     left: 50%;
     transform: translate(-50%, -50%);
     width: 85vw;
-    max-width: 1100px;
+    max-width: 1000px;
     height: 80vh;
-    max-height: 800px;
+    max-height: 750px;
     background: var(--SmartThemeBlurTintColor, #1e1e24);
     border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: 12px;
@@ -115,7 +129,7 @@
     border: none;
     color: #fff;
     cursor: pointer;
-    font-size: 1em;
+    font-size: 1.1em;
     padding: 4px 8px;
     border-radius: 4px;
     opacity: 0.8;
@@ -150,7 +164,7 @@
     align-content: start;
 }
 
-/* Gallery Card Design */
+/* Card layout */
 .ia-card {
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.1);
@@ -215,6 +229,40 @@
     background: rgba(255, 255, 255, 0.2);
 }
 
+/* Chat Image Wrapper & Reroll */
+.ia-img-wrapper {
+    position: relative;
+    display: inline-block;
+    margin-top: 8px;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.ia-img-wrapper img {
+    max-width: 100%;
+    border-radius: 8px;
+    display: block;
+}
+
+.ia-reroll-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(0, 0, 0, 0.75);
+    color: #fff;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    padding: 4px 8px;
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 0.8em;
+    backdrop-filter: blur(4px);
+    transition: background 0.2s ease;
+}
+
+.ia-reroll-btn:hover {
+    background: rgba(255, 100, 100, 0.85);
+}
+
 /* Mobile Responsive Optimization (< 768px) */
 @media (max-width: 768px) {
     #ia_gallery_modal {
@@ -262,19 +310,12 @@
     }
 
     .ia-gallery-grid {
-        grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
         gap: 8px;
         padding: 8px;
     }
 
     .ia-card img {
-        height: 130px;
-    }
-
-    #ia_gallery_bubble {
-        bottom: 16px;
-        right: 16px;
-        width: 46px;
-        height: 46px;
+        height: 125px;
     }
 }

@@ -27,7 +27,7 @@ Prompt rules: describe composition, lighting, mood, environment, and every visib
 
 const defaultSettings = {
     enabled: true,
-    triggerMode: 'every', // 'every' or 'interval'
+    triggerMode: 'every',
     triggerInterval: 3,
     pipelinePhase: 'post',
     interactiveReview: false,
@@ -69,7 +69,7 @@ let imageGalleryDb = [];
 let isEvaluating = false;
 let messageTurnCounter = 0;
 
-// Strict Sequential FIFO Task Queue
+// Sequential FIFO Task Queue
 const taskQueue = [];
 let isQueueRunning = false;
 
@@ -92,27 +92,59 @@ async function processQueue() {
     isQueueRunning = false;
 }
 
+// Global server-synced storage (Identical across PC & Mobile)
 function loadStorage() {
-    try {
-        const stored = localStorage.getItem('ia_gallery_records');
-        if (stored) imageGalleryDb = JSON.parse(stored);
-    } catch {
-        imageGalleryDb = [];
-    }
+    const context = SillyTavern.getContext();
+    const settings = context.extensionSettings?.[MODULE_NAME];
+    imageGalleryDb = (settings && Array.isArray(settings.gallery)) ? settings.gallery : [];
     updateGalleryBubbleBadge();
 }
 
 function saveStorage() {
-    try {
-        localStorage.setItem('ia_gallery_records', JSON.stringify(imageGalleryDb));
-    } catch (e) {
-        console.warn('[Illustration Agent] Storage quota error', e);
+    const context = SillyTavern.getContext();
+    if (!context.extensionSettings[MODULE_NAME]) {
+        context.extensionSettings[MODULE_NAME] = {};
     }
+    context.extensionSettings[MODULE_NAME].gallery = imageGalleryDb;
+    context.saveSettingsDebounced?.();
     updateGalleryBubbleBadge();
 }
 
 function updateGalleryBubbleBadge() {
     $('#ia_gallery_bubble_badge').text(imageGalleryDb.length);
+}
+
+// Automatically resolve ComfyUI IP for mobile phones accessing PC
+function getEffectiveComfyUrl() {
+    const s = SillyTavern.getContext().extensionSettings[MODULE_NAME];
+    let url = (s.comfyUrl || 'http://127.0.0.1:8188').replace(/\/+$/, '');
+    try {
+        const parsed = new URL(url);
+        if ((parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost') &&
+            window.location.hostname !== '127.0.0.1' && window.location.hostname !== 'localhost') {
+            parsed.hostname = window.location.hostname;
+            return parsed.origin;
+        }
+    } catch (e) {
+        console.warn('[Illustration Agent] URL Parse error', e);
+    }
+    return url;
+}
+
+// Convert image URL to Base64 so all devices can display it without network issues
+async function convertUrlToBase64(imgUrl) {
+    try {
+        const res = await fetch(imgUrl);
+        const blob = await res.blob();
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => resolve(reader.result);
+            reader.readAsDataURL(blob);
+        });
+    } catch (e) {
+        console.warn('[Illustration Agent] Base64 conversion fallback to original URL', e);
+        return imgUrl;
+    }
 }
 
 function inspectWorkflowMacros() {
@@ -156,7 +188,6 @@ function injectUI() {
             </div>
             
             <div id="ia_drawer_content" class="inline-drawer-content" style="display: none; padding: 12px;">
-                <!-- Core Pipeline Settings -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-sliders"></i> Core Pipeline Settings</div>
                     
@@ -166,7 +197,7 @@ function injectUI() {
                             <span><b>Enable Autonomous Illustrator</b></span>
                         </label>
                         <button type="button" id="ia_open_gallery_btn" class="menu_button" style="padding: 3px 10px;">
-                            <i class="fa-solid fa-images"></i> Floating Gallery
+                            <i class="fa-solid fa-images"></i> Gallery Window
                         </button>
                     </div>
 
@@ -181,7 +212,6 @@ function injectUI() {
                     <div id="ia_interval_row" class="ia-row" style="display: none;">
                         <label for="ia_trigger_interval"><b>Message Interval (X turns):</b></label>
                         <input type="number" id="ia_trigger_interval" class="text_pole" min="2" max="20" value="3">
-                        <small style="opacity: 0.7;">The agent will only consider generating an illustration once every X messages.</small>
                     </div>
 
                     <div class="ia-row">
@@ -211,7 +241,6 @@ function injectUI() {
                     </div>
                 </div>
 
-                <!-- Custom Resolution Config -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-crop-simple"></i> Resolution & Aspect Ratios (W × H)</div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
@@ -246,7 +275,6 @@ function injectUI() {
                     </div>
                 </div>
 
-                <!-- Evaluator LLM API -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-brain"></i> Agent Evaluator LLM</div>
                     <div class="ia-row">
@@ -272,7 +300,6 @@ function injectUI() {
                     </div>
                 </div>
 
-                <!-- Image Backend Selection -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-wand-magic-sparkles"></i> Image Generation Backend</div>
                     <div class="ia-row">
@@ -320,7 +347,6 @@ function injectUI() {
                     </div>
                 </div>
 
-                <!-- Marinara Prompting Rules -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-file-code"></i> Marinara System Instructions & Macros</div>
                     <div class="ia-row">
@@ -376,22 +402,22 @@ function injectUI() {
         </div>
     </div>
 
-    <!-- Floating Minimized Bubble -->
-    <div id="ia_gallery_bubble" title="Open Illustration Gallery">
-        <i class="fa-solid fa-camera-retro"></i>
+    <!-- Draggable Android Chat-Head Bubble -->
+    <div id="ia_gallery_bubble" title="Drag me anywhere or tap to open gallery">
+        <i id="ia_bubble_icon" class="fa-solid fa-camera-retro"></i>
         <div id="ia_gallery_bubble_badge">0</div>
     </div>
 
     <!-- Floating Window Gallery -->
     <div id="ia_gallery_modal" style="display: none;">
         <div class="ia-gallery-header">
-            <b><i class="fa-solid fa-images" style="color: #ff7675; margin-right: 6px;"></i>Illustration Agent Gallery</b>
+            <b><i class="fa-solid fa-images" style="color: #ff7675; margin-right: 6px;"></i>Illustration Gallery</b>
             <div class="ia-gallery-controls">
                 <label class="checkbox_label" style="font-size: 0.85em; margin-right: 6px;">
                     <input type="checkbox" id="ia_gallery_flat_toggle">
                     <span>Flat View</span>
                 </label>
-                <button type="button" id="ia_win_min_btn" class="ia-win-btn" title="Minimize to Floating Bubble"><i class="fa-solid fa-minus"></i></button>
+                <button type="button" id="ia_win_min_btn" class="ia-win-btn" title="Minimize to Bubble"><i class="fa-solid fa-minus"></i></button>
                 <button type="button" id="ia_win_close_btn" class="ia-win-btn" title="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
         </div>
@@ -407,15 +433,84 @@ function injectUI() {
 
     $('#ia_drawer_content').on('click', (e) => e.stopPropagation());
     
-    // Gallery Window & Bubble Handlers
+    // Bind Controls
     $('#ia_open_gallery_btn').on('click', (e) => { e.stopPropagation(); openGalleryWindow(); });
-    $('#ia_gallery_bubble').on('click', openGalleryWindow);
     $('#ia_win_min_btn').on('click', minimizeGalleryWindow);
     $('#ia_win_close_btn').on('click', closeGalleryWindow);
     $('#ia_close_review, #ia_rev_cancel').on('click', () => $('#ia_review_modal').fadeOut(150));
+
+    setupAndroidBubbleDraggable();
+}
+
+// Android Chat-Head Draggable & Edge-Snapping Behavior
+function setupAndroidBubbleDraggable() {
+    const $bubble = $('#ia_gallery_bubble');
+    let isDragging = false;
+    let startX, startY, initLeft, initTop;
+    let thresholdExceeded = false;
+
+    $bubble.on('touchstart mousedown', function (e) {
+        const evt = e.touches ? e.touches[0] : e;
+        isDragging = true;
+        thresholdExceeded = false;
+        startX = evt.clientX;
+        startY = evt.clientY;
+
+        const rect = $bubble[0].getBoundingClientRect();
+        initLeft = rect.left;
+        initTop = rect.top;
+        $bubble.css({ transition: 'none' });
+    });
+
+    $(document).on('touchmove mousemove', function (e) {
+        if (!isDragging) return;
+        const evt = e.touches ? e.touches[0] : e;
+        const dx = evt.clientX - startX;
+        const dy = evt.clientY - startY;
+
+        if (Math.abs(dx) > 6 || Math.abs(dy) > 6) {
+            thresholdExceeded = true;
+        }
+
+        if (thresholdExceeded) {
+            let nextX = initLeft + dx;
+            let nextY = initTop + dy;
+
+            // Clamp inside viewport
+            nextX = Math.max(8, Math.min(window.innerWidth - 60, nextX));
+            nextY = Math.max(8, Math.min(window.innerHeight - 60, nextY));
+
+            $bubble.css({
+                left: nextX + 'px',
+                top: nextY + 'px',
+                right: 'auto',
+                bottom: 'auto'
+            });
+        }
+    });
+
+    $(document).on('touchend mouseup', function () {
+        if (!isDragging) return;
+        isDragging = false;
+
+        if (thresholdExceeded) {
+            // Android Edge-Snapping: snap smoothly to nearest left or right edge
+            const rect = $bubble[0].getBoundingClientRect();
+            const midX = window.innerWidth / 2;
+            const targetX = (rect.left + 26 < midX) ? 12 : (window.innerWidth - 64);
+
+            $bubble.css({ transition: 'all 0.25s cubic-bezier(0.25, 1, 0.5, 1)' });
+            $bubble.css('left', targetX + 'px');
+            setTimeout(() => $bubble.css({ transition: 'none' }), 250);
+        } else {
+            // Tap / Click without dragging: open the window
+            openGalleryWindow();
+        }
+    });
 }
 
 function openGalleryWindow() {
+    loadStorage();
     $('#ia_gallery_bubble').fadeOut(150);
     renderGalleryNav();
     renderGalleryContent();
@@ -430,7 +525,7 @@ function minimizeGalleryWindow() {
 
 function closeGalleryWindow() {
     $('#ia_gallery_modal').fadeOut(150);
-    $('#ia_gallery_bubble').fadeOut(150);
+    $('#ia_gallery_bubble').fadeIn(150);
 }
 
 // 2. Settings Binding
@@ -576,7 +671,6 @@ async function runEvaluation(force = false) {
     if (!context.chat || context.chat.length === 0) return;
     if (!force && !s.enabled) return;
 
-    // Check interval trigger if not forced
     if (!force && s.triggerMode === 'interval') {
         messageTurnCounter++;
         if (messageTurnCounter % (s.triggerInterval || 3) !== 0) {
@@ -607,10 +701,17 @@ ${contextText}
 ${lastMsg.mes}
 </assistant_response>`;
 
+        // Activate Android Bubble thinking indicator
+        $('#ia_gallery_bubble').addClass('is-generating');
+        $('#ia_bubble_icon').removeClass('fa-camera-retro').addClass('fa-wand-magic-sparkles fa-spin');
         toastr.info('Illustration Agent evaluating scene...', 'Marinara');
 
         const rawResponse = await queryAgentLLM(fullPrompt);
-        if (!rawResponse) { isEvaluating = false; return; }
+        if (!rawResponse) {
+            resetGeneratingIndicator();
+            isEvaluating = false;
+            return;
+        }
 
         const cleaned = rawResponse.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
         const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
@@ -619,7 +720,7 @@ ${lastMsg.mes}
 
         console.log('[Illustration Agent Decision]', result);
 
-        // A. Handle Background Evaluation
+        // A. Background
         if (result.generateBackground) {
             const loc = result.location || 'New Scene';
             const matchedBg = findExistingBackground(loc);
@@ -646,7 +747,7 @@ ${lastMsg.mes}
             }
         }
 
-        // B. Handle Character / Roleplay Illustration
+        // B. Character Illustration
         if (force || result.shouldGenerate === true) {
             const combinedPos = [s.stylePrefix, result.prompt].filter(Boolean).join(', ');
             const combinedNeg = [s.defaultNegative, result.negativePrompt].filter(Boolean).join(', ');
@@ -658,13 +759,21 @@ ${lastMsg.mes}
                     await executeImagePipeline(combinedPos, combinedNeg, result.aspectRatio, result);
                 });
             }
+        } else {
+            resetGeneratingIndicator();
         }
     } catch (e) {
         console.error('[Illustration Agent Error]', e);
+        resetGeneratingIndicator();
         toastr.error('Evaluation failed. See browser console.', 'Marinara');
     } finally {
         isEvaluating = false;
     }
+}
+
+function resetGeneratingIndicator() {
+    $('#ia_gallery_bubble').removeClass('is-generating');
+    $('#ia_bubble_icon').removeClass('fa-wand-magic-sparkles fa-spin').addClass('fa-camera-retro');
 }
 
 function promptReviewModal(pos, neg, ar, metadata) {
@@ -702,15 +811,19 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
 
     const totalBatch = s.batchCount || 1;
 
-    for (let i = 0; i < totalBatch; i++) {
-        if (s.imageBackend === 'comfyui_direct') {
-            const imageUrl = await generateComfyImage(positive, negative, width, height, metadata);
-            if (imageUrl) {
-                injectImageIntoChatMessage(imageUrl, metadata.description);
+    try {
+        for (let i = 0; i < totalBatch; i++) {
+            if (s.imageBackend === 'comfyui_direct') {
+                const imageUrl = await generateComfyImage(positive, negative, width, height, metadata);
+                if (imageUrl) {
+                    injectImageIntoChatMessage(imageUrl, metadata.description);
+                }
+            } else {
+                await context.executeSlashCommands(`/imagine ${positive}`);
             }
-        } else {
-            await context.executeSlashCommands(`/imagine ${positive}`);
         }
+    } finally {
+        resetGeneratingIndicator();
     }
 }
 
@@ -739,32 +852,47 @@ async function pollComfyResult(comfyUrl, promptId, maxAttempts = 75) {
     throw new Error('ComfyUI generation timed out.');
 }
 
+// Injects the Base64 image directly into the active chat message
 function injectImageIntoChatMessage(imageUrl, description) {
     const context = SillyTavern.getContext();
     if (!context || !context.chat || context.chat.length === 0) return;
 
-    const messageIndex = context.chat.length - 1;
+    // Find the latest assistant message
+    let messageIndex = context.chat.length - 1;
+    while (messageIndex >= 0 && context.chat[messageIndex].is_user) {
+        messageIndex--;
+    }
+    if (messageIndex < 0) messageIndex = context.chat.length - 1;
+
     const targetMsg = context.chat[messageIndex];
-    const imageMarkdown = `\n\n![](${imageUrl})`;
+    const imageMarkdown = `\n\n![${description || 'Illustration'}](${imageUrl})`;
 
     if (!targetMsg.mes.includes(imageUrl)) {
         targetMsg.mes += imageMarkdown;
 
         if (typeof context.updateMessage === 'function') {
             context.updateMessage(messageIndex, targetMsg);
-        } else {
-            const $lastMes = $('.mes_text').last();
-            if ($lastMes.length) {
-                $lastMes.append(`<div class="ia-img-wrapper" style="margin-top: 10px;"><img src="${imageUrl}" style="max-width: 100%; border-radius: 8px;" /></div>`);
-            }
-            context.saveChatDebounced?.();
+        }
+        if (typeof context.saveChatDebounced === 'function') {
+            context.saveChatDebounced();
+        }
+
+        // Direct DOM update guarantee (works instantly across all devices)
+        const $mesElement = $(`#chat .mes[mesid="${messageIndex}"] .mes_text, .mes_text`).last();
+        if ($mesElement.length && !$mesElement.find(`img[src="${imageUrl}"]`).length) {
+            $mesElement.append(`
+                <div class="ia-img-wrapper" style="margin-top: 10px;">
+                    <img src="${imageUrl}" alt="${description || 'Illustration'}" />
+                    <button type="button" class="ia-reroll-btn"><i class="fa-solid fa-rotate-right"></i> Reroll</button>
+                </div>
+            `);
         }
     }
 }
 
 async function generateComfyImage(positive, negative, width, height, metadata) {
     const s = SillyTavern.getContext().extensionSettings[MODULE_NAME];
-    const comfyBaseUrl = s.comfyUrl.replace(/\/+$/, '');
+    const comfyBaseUrl = getEffectiveComfyUrl();
 
     try {
         if (!s.comfyWorkflow || !s.comfyWorkflow.trim()) {
@@ -817,9 +945,13 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
         }
 
         const data = await resp.json();
-        toastr.info(`ComfyUI Job Queued (${data.prompt_id})...`, 'Marinara');
+        toastr.info(`ComfyUI Running (${data.prompt_id})...`, 'Marinara');
 
-        const imageUrl = await pollComfyResult(comfyBaseUrl, data.prompt_id);
+        // Poll raw URL from ComfyUI
+        const rawImageUrl = await pollComfyResult(comfyBaseUrl, data.prompt_id);
+
+        // Convert to Base64 so it can be viewed on any device
+        const base64Url = await convertUrlToBase64(rawImageUrl);
 
         recordImage({
             id: Date.now() + Math.random().toString(36).substr(2, 4),
@@ -833,10 +965,10 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
             type: metadata.isBackground ? 'background' : 'illustration',
             location: metadata.location || '',
             reason: metadata.reason,
-            url: imageUrl
+            url: base64Url
         });
 
-        return imageUrl;
+        return base64Url;
     } catch (e) {
         console.error('[ComfyUI Direct Error]', e);
         toastr.error(`ComfyUI execution failed: ${e.message}`, 'Marinara');
@@ -844,8 +976,9 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
     }
 }
 
-// 6. Gallery System
+// 6. Shared Gallery System
 function recordImage(entry) {
+    loadStorage();
     imageGalleryDb.unshift(entry);
     saveStorage();
 }
@@ -873,7 +1006,7 @@ function renderGalleryNav() {
         `);
     });
 
-    $('.ia-nav-filter, .ia-nav-char').off('click').on('click', function() {
+    $('.ia-nav-filter, .ia-nav-char').off('click').on('click', function () {
         $('.ia-nav-filter, .ia-nav-char').css('background', 'transparent');
         $(this).css('background', 'rgba(255,255,255,0.15)');
 
@@ -889,6 +1022,7 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     const $grid = $('#ia_gallery_content').empty();
     const isFlat = $('#ia_gallery_flat_toggle').is(':checked');
 
+    loadStorage();
     let records = [...imageGalleryDb];
 
     if (!isFlat) {
@@ -929,7 +1063,6 @@ function renderGalleryContent(filterChar = null, filterType = null) {
             </div>
         `);
 
-        // Set BG Button
         $card.find('.ia-set-bg-btn').on('click', async (e) => {
             e.stopPropagation();
             if (r.url) {
@@ -938,7 +1071,6 @@ function renderGalleryContent(filterChar = null, filterType = null) {
             }
         });
 
-        // Show photo to character (Inserts in-character action so the LLM recognizes the photo)
         $card.find('.ia-show-char-btn').on('click', async (e) => {
             e.stopPropagation();
             const desc = r.description || r.reason;
@@ -946,8 +1078,6 @@ function renderGalleryContent(filterChar = null, filterType = null) {
             const charName = context.characters?.[context.characterId]?.name || 'Character';
 
             const userPrompt = `*shows ${charName} the photo: [Photo Details: ${desc}]*`;
-            
-            // Populate the SillyTavern chat textarea so user can inspect or send immediately
             $('#send_textarea').val(userPrompt).trigger('input');
             toastr.info(`Attached photo description to chat input!`, 'Marinara');
             closeGalleryWindow();
@@ -957,13 +1087,13 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     });
 }
 
-// 7. In-Chat Reroll / Swipe Buttons
+// 7. In-Chat Reroll Buttons
 function attachInChatMessageButtons() {
     $('.mes_text img').each(function () {
         const $img = $(this);
         if ($img.parent().hasClass('ia-img-wrapper')) return;
 
-        $img.wrap('<div class="ia-img-wrapper" style="position: relative; display: inline-block;"></div>');
+        $img.wrap('<div class="ia-img-wrapper"></div>');
         const $btn = $('<button type="button" class="ia-reroll-btn"><i class="fa-solid fa-rotate-right"></i> Reroll</button>');
         $img.after($btn);
 
@@ -975,11 +1105,11 @@ function attachInChatMessageButtons() {
     });
 }
 
-// 8. SillyTavern Lifecycle Hookup
+// 8. Lifecycle
 jQuery(async () => {
-    loadStorage();
     injectUI();
     loadSettings();
+    loadStorage();
     bindUI();
 
     const context = SillyTavern.getContext();
@@ -1002,5 +1132,5 @@ jQuery(async () => {
     }
 
     setInterval(attachInChatMessageButtons, 2500);
-    console.log('[Illustration Agent] Marinara Mobile & Floating Architecture Loaded.');
+    console.log('[Illustration Agent] Unified Cross-Device & Android Bubble Architecture Ready.');
 });
