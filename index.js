@@ -29,24 +29,20 @@ const defaultSettings = {
     interactiveReview: false,
     batchCount: 1,
     lookback: 3,
-    stylePrefix: 'masterpiece, best quality, ultra-detailed, cinematic lighting',
+    stylePrefix: 'semi-realistic anime style, 2.5D anime, 3D anime, masterpiece, best quality, cinematic lighting',
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, blurry, jpeg artifacts',
     marinaraPrompt: defaultMarinaraPrompt,
     
-    // Sampler default overrides
     comfySteps: 20,
     comfyCfg: 4.5,
     comfySampler: 'euler_ancestral',
     comfyScheduler: 'normal',
-    comfyDenoise: 1.0,
 
-    // LLM Settings
     llmProvider: 'current',
     customLlmUrl: 'https://api.openai.com/v1',
     customLlmKey: '',
     customLlmModel: 'gpt-4o-mini',
 
-    // Image Backend
     imageBackend: 'comfyui_direct',
     comfyUrl: 'http://127.0.0.1:8188',
     comfyWorkflow: ''
@@ -72,7 +68,6 @@ function saveStorage() {
     }
 }
 
-// Live scanner to highlight macros in real time
 function inspectWorkflowMacros() {
     const raw = $('#ia_comfy_workflow').val() || '';
     const macros = [
@@ -114,7 +109,6 @@ function injectUI() {
             </div>
             
             <div id="ia_drawer_content" class="inline-drawer-content" style="display: none; padding: 12px;">
-                <!-- General Section -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-sliders"></i> Core Pipeline Settings</div>
                     
@@ -155,7 +149,6 @@ function injectUI() {
                     </div>
                 </div>
 
-                <!-- Evaluator LLM API -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-brain"></i> Agent Evaluator LLM</div>
                     <div class="ia-row">
@@ -181,7 +174,6 @@ function injectUI() {
                     </div>
                 </div>
 
-                <!-- Image Backend Selection -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-wand-magic-sparkles"></i> Image Generation Backend</div>
                     <div class="ia-row">
@@ -198,7 +190,6 @@ function injectUI() {
                             <input type="text" id="ia_comfy_url" class="text_pole" placeholder="http://127.0.0.1:8188">
                         </div>
 
-                        <!-- Sampler default values for macros -->
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px;">
                             <div>
                                 <label><small>Steps (%steps%)</small></label>
@@ -223,7 +214,6 @@ function injectUI() {
                             <textarea id="ia_comfy_workflow" class="text_pole" rows="8" style="font-family: monospace; font-size: 0.8em;" placeholder="Paste API format JSON here..."></textarea>
                         </div>
                         
-                        <!-- Macro status indicator -->
                         <div style="margin-top: 4px;">
                             <label style="font-size: 0.8em; opacity: 0.8;"><b>Macro Detection Status:</b></label>
                             <div id="ia_macro_detector" style="margin-top: 4px;"></div>
@@ -231,7 +221,6 @@ function injectUI() {
                     </div>
                 </div>
 
-                <!-- Marinara Prompting Rules -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-file-code"></i> Marinara System Instructions & Macros</div>
                     <div class="ia-row">
@@ -478,7 +467,6 @@ ${lastMsg.mes}
     }
 }
 
-// 5. Review Modal Handler
 function promptReviewModal(pos, neg, ar, metadata) {
     $('#ia_rev_positive').val(pos);
     $('#ia_rev_negative').val(neg);
@@ -491,7 +479,7 @@ function promptReviewModal(pos, neg, ar, metadata) {
     });
 }
 
-// 6. Direct ComfyUI / Image Pipeline Execution
+// 5. Image Pipeline Execution
 async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
     const context = SillyTavern.getContext();
     const s = context.extensionSettings[MODULE_NAME];
@@ -508,16 +496,73 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
     }
 }
 
+// Wait for ComfyUI to finish rendering and fetch the result image
+async function pollComfyResult(comfyUrl, promptId, maxAttempts = 60) {
+    for (let i = 0; i < maxAttempts; i++) {
+        await new Promise(r => setTimeout(r, 1500)); // poll every 1.5 seconds
+
+        try {
+            const resp = await fetch(`${comfyUrl}/history/${promptId}`);
+            if (!resp.ok) continue;
+
+            const history = await resp.json();
+            if (history && history[promptId] && history[promptId].outputs) {
+                const outputs = history[promptId].outputs;
+                // Search for SaveImage output node
+                for (const nodeId in outputs) {
+                    if (outputs[nodeId].images && outputs[nodeId].images.length > 0) {
+                        const imgInfo = outputs[nodeId].images[0];
+                        return `${comfyUrl}/view?filename=${encodeURIComponent(imgInfo.filename)}&subfolder=${encodeURIComponent(imgInfo.subfolder || '')}&type=${encodeURIComponent(imgInfo.type || 'output')}`;
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn('[Illustration Agent] Polling ComfyUI history...', e);
+        }
+    }
+    throw new Error('ComfyUI generation timed out after 90 seconds.');
+}
+
+// Injects the generated image directly into the active chat message
+function injectImageIntoChatMessage(imageUrl) {
+    const context = SillyTavern.getContext();
+    if (!context || !context.chat || context.chat.length === 0) return;
+
+    // Find the latest assistant message
+    const messageIndex = context.chat.length - 1;
+    const targetMsg = context.chat[messageIndex];
+
+    const imageMarkdown = `\n\n![](${imageUrl})`;
+    
+    // Prevent duplicate appending if called repeatedly
+    if (!targetMsg.mes.includes(imageUrl)) {
+        targetMsg.mes += imageMarkdown;
+        
+        // Re-render the chat message inside SillyTavern
+        if (typeof context.updateMessage === 'function') {
+            context.updateMessage(messageIndex, targetMsg);
+        } else {
+            // Native DOM fallback
+            const $lastMes = $('.mes_text').last();
+            if ($lastMes.length) {
+                $lastMes.append(`<div class="ia-img-wrapper" style="margin-top: 10px;"><img src="${imageUrl}" style="max-width: 100%; border-radius: 8px;" /></div>`);
+            }
+            context.saveChatDebounced?.();
+        }
+    }
+}
+
 async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
     const s = SillyTavern.getContext().extensionSettings[MODULE_NAME];
+    const comfyBaseUrl = s.comfyUrl.replace(/\/+$/, '');
+
     try {
         if (!s.comfyWorkflow || !s.comfyWorkflow.trim()) {
             throw new Error('ComfyUI API Workflow JSON is empty. Paste your workflow in settings.');
         }
 
-        // 1. Calculate resolution from aspect ratio
         let width = 832;
-        let height = 1216; // default portrait
+        let height = 1216;
         if (aspectRatio === 'landscape') {
             width = 1216;
             height = 832;
@@ -535,21 +580,16 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
 
         let rawStr = s.comfyWorkflow;
 
-        // Escape text safely for valid JSON insertion
         const safePositive = JSON.stringify(positive).slice(1, -1);
         const safeNegative = JSON.stringify(negative).slice(1, -1);
 
-        // Replace string macros
         rawStr = rawStr
             .replaceAll('%prompt%', safePositive)
             .replaceAll('%positive%', safePositive)
             .replaceAll('%negative_prompt%', safeNegative)
             .replaceAll('%negative%', safeNegative)
             .replaceAll('%sampler%', sampler)
-            .replaceAll('%scheduler%', scheduler);
-
-        // Replace numeric macros (both quoted and unquoted representations)
-        rawStr = rawStr
+            .replaceAll('%scheduler%', scheduler)
             .replaceAll('"%seed%"', randomSeed)
             .replaceAll('%seed%', randomSeed)
             .replaceAll('"%steps%"', steps)
@@ -565,7 +605,8 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
 
         const workflow = JSON.parse(rawStr);
 
-        const resp = await fetch(`${s.comfyUrl.replace(/\/+$/, '')}/prompt`, {
+        // 1. Submit prompt to ComfyUI
+        const resp = await fetch(`${comfyBaseUrl}/prompt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt: workflow })
@@ -577,8 +618,17 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
         }
 
         const data = await resp.json();
-        toastr.info(`ComfyUI Prompt Queued (ID: ${data.prompt_id})`, 'Marinara');
+        toastr.info(`ComfyUI Job Running (ID: ${data.prompt_id})...`, 'Marinara');
 
+        // 2. Poll until ComfyUI finishes and returns the image URL
+        const imageUrl = await pollComfyResult(comfyBaseUrl, data.prompt_id);
+
+        toastr.success('Illustration ready!', 'Marinara');
+
+        // 3. Inject directly into the chat message
+        injectImageIntoChatMessage(imageUrl);
+
+        // 4. Save to gallery with full URL
         recordImage({
             id: Date.now() + Math.random().toString(36).substr(2, 4),
             character: SillyTavern.getContext().characters?.[SillyTavern.getContext().characterId]?.name || 'Unknown',
@@ -588,15 +638,16 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
             negative,
             aspectRatio,
             reason: metadata.reason,
-            url: ''
+            url: imageUrl
         });
+
     } catch (e) {
         console.error('[ComfyUI Direct Error]', e);
-        toastr.error(`ComfyUI dispatch failed: ${e.message}`, 'Marinara');
+        toastr.error(`ComfyUI execution failed: ${e.message}`, 'Marinara');
     }
 }
 
-// 7. Gallery System
+// 6. Gallery System
 function recordImage(entry) {
     imageGalleryDb.unshift(entry);
     saveStorage();
@@ -643,27 +694,29 @@ function renderGalleryContent(filterChar = null) {
     }
 
     records.forEach(r => {
+        const imageMarkup = r.url
+            ? `<img src="${r.url}" style="width: 100%; height: 160px; object-fit: cover;" onerror="this.onerror=null; this.src=''; $(this).replaceWith('<div style=\\'height: 160px; display: flex; align-items: center; justify-content: center; background: #222;\\'><i class=\\'fa-solid fa-triangle-exclamation\\'></i> Image unreachable</div>');" />`
+            : `<div style="background: #111; height: 160px; display: flex; align-items: center; justify-content: center; font-size: 2em; color: #555;"><i class="fa-solid fa-image"></i></div>`;
+
         $grid.append(`
-            <div class="ia-card" title="Reason: ${r.reason || 'N/A'}">
-                <div style="background: #111; height: 160px; display: flex; align-items: center; justify-content: center; font-size: 2em; color: #555;">
-                    <i class="fa-solid fa-image"></i>
-                </div>
-                <div class="ia-card-meta">
+            <div class="ia-card" title="Reason: ${r.reason || 'N/A'}" style="background: rgba(255,255,255,0.05); border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1);">
+                ${imageMarkup}
+                <div class="ia-card-meta" style="padding: 8px;">
                     <b>${r.character}</b> - <small>${new Date(r.date).toLocaleDateString()}</small><br>
-                    <span style="opacity: 0.7;">${(r.positive || '').substring(0, 45)}...</span>
+                    <span style="opacity: 0.7; font-size: 0.85em;">${(r.positive || '').substring(0, 45)}...</span>
                 </div>
             </div>
         `);
     });
 }
 
-// 8. In-Chat Reroll / Swipe Buttons
+// 7. In-Chat Reroll / Swipe Buttons
 function attachInChatMessageButtons() {
     $('.mes_text img').each(function () {
         const $img = $(this);
         if ($img.parent().hasClass('ia-img-wrapper')) return;
 
-        $img.wrap('<div class="ia-img-wrapper"></div>');
+        $img.wrap('<div class="ia-img-wrapper" style="position: relative; display: inline-block;"></div>');
         const $btn = $('<button type="button" class="ia-reroll-btn"><i class="fa-solid fa-rotate-right"></i> Reroll</button>');
         $img.after($btn);
 
@@ -675,7 +728,7 @@ function attachInChatMessageButtons() {
     });
 }
 
-// 9. SillyTavern Lifecycle Hookup
+// 8. SillyTavern Lifecycle Hookup
 jQuery(async () => {
     loadStorage();
     injectUI();
