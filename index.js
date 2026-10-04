@@ -1,32 +1,49 @@
 const MODULE_NAME = 'comfyui-illustration-agent';
 
-const defaultMarinaraPrompt = `Anchor the decision to <assistant_response>, the latest assistant turn. Use recent context only for continuity.
-Set \`shouldGenerate\` to true if the latest assistant response contains at least one of the following:
-1. A direct photo action: a character takes a picture, selfie, or explicitly requests/captures a photo. This always triggers generation, regardless of how casual the moment is.
-2. A distinct visual shift or action: the scene features a physical action, an emotional expression, a new location, a newly described character, or a physical transformation.
+// Single Unified Master System Prompt
+const defaultUnifiedSystemPrompt = `You are the autonomous Marinara Illustration Agent for a roleplay novel.
+Analyze the latest assistant turn (<assistant_response>) anchored to recent chat continuity.
 
-If no picture is taken and the current scene is purely conversational or visually static, set \`shouldGenerate\` to false and keep the prompt empty.
+Execute these steps strictly:
 
-Independently decide whether the active Roleplay background should change. Set \`generateBackground\` to true only when the latest scene enters a meaningfully different reusable location or setting. Always provide a concise "location" name (e.g. "Kuu's bedroom", "snowy forest", "tavern counter"). Keep \`generateBackground\` false when the location is unchanged, or only mood, lighting, time, or camera framing changed.
+### STEP 1: DECISION (yes or no)
+- Set "decision" to "yes" if the latest assistant turn contains ANY of:
+  1. A direct photo/selfie action (a character takes, poses for, sends, or requests a picture).
+  2. A physical action, dynamic combat, intimacy, transformation, or character reveal.
+  3. The narrative transitions to a noticeably different reusable location/room.
+- Otherwise, set "decision" to "no" (for static conversation, contemplation, or minor dialog). Stop and return empty prompts.
 
-Return valid JSON only:
+### STEP 2: TARGET (roleplay OR background)
+- "target": "background" -> ONLY when the scene transitions to a new reusable room, building, landscape, or environment.
+- "target": "roleplay" -> For character actions, selfies, intimate moments, portraits, or key events.
+(Note: "background" and "roleplay" are mutually exclusive. Pick only one.)
+
+### STEP 3: NARRATIVE DESCRIPTION
+- "description": Write an accurate, concise 1-2 sentence description in plain natural English of what is visually depicted.
+  - Ground it strictly in the character's card traits, outfit, pose, expression, and environment. Do not hallucinate missing features.
+  - For selfies/photos, state explicitly: "A selfie taken by [Char] smiling in [Location] wearing [Outfit]..."
+  - This narrative text will be perceived by the LLM in future turns so it remembers the visual moment.
+
+### STEP 4: IMAGE GENERATION PROMPT
+- "prompt": High-quality text-to-image tags derived DIRECTLY from your description (subject, pose, clothing details, expression, environment, lighting, angle).
+- "negativePrompt": Specific tags to avoid (e.g., bad anatomy, distorted hands, blurry, lowres).
+
+Respond ONLY with valid JSON in this exact schema:
 {
-  "shouldGenerate": boolean,
-  "generateBackground": boolean,
-  "location": "concise name of location or room",
-  "reason": "why generate or why not",
-  "description": "natural 1-2 sentence description of what the photo or moment actually shows in plain English without tags, for character recognition (e.g. 'A selfie taken by Kuu smiling in her bedroom wearing a knitted sweater')",
-  "prompt": "detailed prompt tags if shouldGenerate is true",
-  "negativePrompt": "what to avoid",
-  "style": "visual style",
-  "aspectRatio": "landscape|portrait|square",
-  "characters": ["visible character name"]
-}
-
-Prompt rules: describe composition, lighting, mood, environment, and every visible character directly. Include body build, clothing/outfit, hair, face, and distinguishing features. Put all visible names in characters. Include no UI, watermark, logo, signature, captions, speech bubbles, subtitles, manga SFX, or meta-instructions.`;
+  "decision": "yes" | "no",
+  "target": "roleplay" | "background",
+  "location": "concise name of place if background",
+  "reason": "short explanation of why or why not",
+  "description": "grounded 1-2 sentence scene description for LLM memory",
+  "prompt": "detailed image generation tags",
+  "negativePrompt": "negative prompt tags",
+  "aspectRatio": "portrait" | "landscape" | "square",
+  "characters": ["visible character names"]
+}`;
 
 const defaultSettings = {
     enabled: true,
+    deliveryMode: 'attached', // 'attached' (to assistant message) or 'separate' (independent hidden card)
     triggerMode: 'every',
     triggerInterval: 3,
     pipelinePhase: 'post',
@@ -35,7 +52,7 @@ const defaultSettings = {
     lookback: 3,
     stylePrefix: 'semi-realistic anime style, 2.5D anime, 3D anime, masterpiece, best quality, cinematic lighting',
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, blurry, jpeg artifacts',
-    marinaraPrompt: defaultMarinaraPrompt,
+    unifiedPrompt: defaultUnifiedSystemPrompt,
 
     // Resolutions
     resPortraitW: 832,
@@ -47,7 +64,7 @@ const defaultSettings = {
     resBgW: 1344,
     resBgH: 768,
 
-    // ComfyUI Defaults
+    // ComfyUI
     comfySteps: 20,
     comfyCfg: 4.5,
     comfySampler: 'euler_ancestral',
@@ -68,7 +85,7 @@ const defaultSettings = {
 let imageGalleryDb = [];
 let isEvaluating = false;
 let messageTurnCounter = 0;
-let lastEvaluatedMsgId = null;
+let lastHandledMessageId = null;
 
 // Sequential Task Queue
 const taskQueue = [];
@@ -132,7 +149,7 @@ function getEffectiveComfyUrl() {
     return url;
 }
 
-// Base64 converter for universal device rendering
+// Base64 converter for offline gallery storage
 async function convertUrlToBase64(imgUrl) {
     try {
         const res = await fetch(imgUrl);
@@ -180,7 +197,6 @@ function inspectWorkflowMacros() {
 function injectUI() {
     if ($('#ia_main_container').length > 0) return;
 
-    // Settings Drawer
     const settingsHtml = `
     <div id="ia_main_container" class="illustration-agent-settings" style="margin-bottom: 12px;">
         <div class="inline-drawer">
@@ -190,9 +206,9 @@ function injectUI() {
             </div>
             
             <div id="ia_drawer_content" class="inline-drawer-content" style="display: none; padding: 12px;">
-                <!-- Diagnostics / Ping Buttons -->
+                <!-- Diagnostics Buttons -->
                 <div class="ia-section">
-                    <div class="ia-section-title"><i class="fa-solid fa-network-wired"></i> Connection Diagnostics</div>
+                    <div class="ia-section-title"><i class="fa-solid fa-network-wired"></i> Diagnostics</div>
                     <div style="display: flex; gap: 8px;">
                         <button type="button" id="ia_ping_llm_btn" class="menu_button" style="flex: 1;">
                             <i class="fa-solid fa-brain"></i> Test LLM
@@ -218,6 +234,15 @@ function injectUI() {
                     </div>
 
                     <div class="ia-row">
+                        <label for="ia_delivery_mode"><b>Roleplay Output Delivery:</b></label>
+                        <select id="ia_delivery_mode" class="text_pole">
+                            <option value="attached">Append to Assistant Turn (Clean Short Link)</option>
+                            <option value="separate">Separate Message Card (Hidden from LLM Context)</option>
+                        </select>
+                        <small style="opacity: 0.7;">Separate cards are excluded from the LLM prompt context to prevent context bloat.</small>
+                    </div>
+
+                    <div class="ia-row">
                         <label for="ia_trigger_mode"><b>Evaluation Frequency:</b></label>
                         <select id="ia_trigger_mode" class="text_pole">
                             <option value="every">Evaluate Every Assistant Message</option>
@@ -233,7 +258,7 @@ function injectUI() {
                     <div class="ia-row">
                         <label for="ia_pipeline_phase"><b>Pipeline Phase:</b></label>
                         <select id="ia_pipeline_phase" class="text_pole">
-                            <option value="post">Post-Processing (After Assistant Turn - Default)</option>
+                            <option value="post">Post-Processing (After Turn - Default)</option>
                             <option value="parallel">Parallel (Simultaneous)</option>
                             <option value="pre">Pre-Generation</option>
                         </select>
@@ -249,7 +274,7 @@ function injectUI() {
                     <div class="ia-row">
                         <label for="ia_batch_count"><b>Images per generation (Batch):</b></label>
                         <input type="number" id="ia_batch_count" class="text_pole" min="1" max="4" value="1">
-                        <small style="opacity: 0.7;">If > 1, a picker will let you choose which image to insert into roleplay.</small>
+                        <small style="opacity: 0.7;">If > 1, a picker modal will let you choose which image to insert into roleplay.</small>
                     </div>
 
                     <div class="ia-row">
@@ -367,9 +392,9 @@ function injectUI() {
                     </div>
                 </div>
 
-                <!-- Marinara Prompting Rules -->
+                <!-- Unified Master System Prompt -->
                 <div class="ia-section">
-                    <div class="ia-section-title"><i class="fa-solid fa-file-code"></i> Marinara System Instructions & Macros</div>
+                    <div class="ia-section-title"><i class="fa-solid fa-file-code"></i> Unified Agent System Prompt & Tools</div>
                     <div class="ia-row">
                         <label><b>Style Prefix:</b></label>
                         <input type="text" id="ia_style_prefix" class="text_pole">
@@ -379,8 +404,9 @@ function injectUI() {
                         <input type="text" id="ia_default_negative" class="text_pole">
                     </div>
                     <div class="ia-row">
-                        <label><b>Agent Instruction Template:</b></label>
-                        <textarea id="ia_marinara_prompt" class="text_pole" rows="8"></textarea>
+                        <label><b>Agent Instructions & Schema:</b></label>
+                        <textarea id="ia_unified_prompt" class="text_pole" rows="12" style="font-family: monospace; font-size: 0.8em;"></textarea>
+                        <small style="opacity: 0.7;">Defines decision rules, description formatting, and image tagging criteria in one place.</small>
                     </div>
                 </div>
 
@@ -403,14 +429,14 @@ function injectUI() {
             <div id="ia_gallery_bubble_badge">0</div>
         </div>
 
-        <div id="ia_review_modal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 500px; max-width: 90vw; background: var(--SmartThemeBlurTintColor, #202028); border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; z-index: 100000; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.85);">
+        <div id="ia_review_modal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 500px; max-width: 90vw; background: var(--SmartThemeBlurTintColor, #202028); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 10px; z-index: 100000; padding: 16px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.85);">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
                 <b><i class="fa-solid fa-pen-to-square"></i> Review Scene Illustration</b>
                 <div id="ia_close_review" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
             </div>
             <div class="ia-row">
-                <label><b>Description (Perceived by Character LLM):</b></label>
-                <input type="text" id="ia_rev_desc" class="text_pole">
+                <label><b>Narrative Description (Perceived by Character LLM):</b></label>
+                <textarea id="ia_rev_desc" class="text_pole" rows="2"></textarea>
             </div>
             <div class="ia-row">
                 <label><b>Positive Prompt (Image Generator):</b></label>
@@ -435,7 +461,7 @@ function injectUI() {
         </div>
 
         <div id="ia_batch_picker_modal" style="display: none;">
-            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 8px;">
                 <b><i class="fa-solid fa-images"></i> Choose Image for Roleplay</b>
                 <div id="ia_close_batch_picker" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
             </div>
@@ -564,6 +590,7 @@ function loadSettings() {
     const s = context.extensionSettings[MODULE_NAME];
 
     $('#ia_enabled').prop('checked', !!s.enabled);
+    $('#ia_delivery_mode').val(s.deliveryMode || 'attached');
     $('#ia_trigger_mode').val(s.triggerMode || 'every');
     $('#ia_trigger_interval').val(s.triggerInterval || 3);
     $('#ia_pipeline_phase').val(s.pipelinePhase);
@@ -572,7 +599,7 @@ function loadSettings() {
     $('#ia_lookback').val(s.lookback);
     $('#ia_style_prefix').val(s.stylePrefix);
     $('#ia_default_negative').val(s.defaultNegative);
-    $('#ia_marinara_prompt').val(s.marinaraPrompt);
+    $('#ia_unified_prompt').val(s.unifiedPrompt || defaultUnifiedSystemPrompt);
 
     $('#ia_res_port_w').val(s.resPortraitW || 832);
     $('#ia_res_port_h').val(s.resPortraitH || 1216);
@@ -614,6 +641,7 @@ function bindUI() {
     const s = context.extensionSettings[MODULE_NAME];
 
     $('#ia_enabled').on('change', function () { s.enabled = $(this).is(':checked'); save(); });
+    $('#ia_delivery_mode').on('change', function () { s.deliveryMode = $(this).val(); save(); });
     $('#ia_trigger_mode').on('change', function () { s.triggerMode = $(this).val(); toggleConditionalFields(); save(); });
     $('#ia_trigger_interval').on('change', function () { s.triggerInterval = Math.max(2, parseInt($(this).val()) || 3); save(); });
     $('#ia_pipeline_phase').on('change', function () { s.pipelinePhase = $(this).val(); save(); });
@@ -622,7 +650,7 @@ function bindUI() {
     $('#ia_lookback').on('change', function () { s.lookback = Math.max(1, parseInt($(this).val()) || 3); save(); });
     $('#ia_style_prefix').on('input', function () { s.stylePrefix = $(this).val(); save(); });
     $('#ia_default_negative').on('input', function () { s.defaultNegative = $(this).val(); save(); });
-    $('#ia_marinara_prompt').on('input', function () { s.marinaraPrompt = $(this).val(); save(); });
+    $('#ia_unified_prompt').on('input', function () { s.unifiedPrompt = $(this).val(); save(); });
 
     $('#ia_res_port_w').on('change', function () { s.resPortraitW = parseInt($(this).val()) || 832; save(); });
     $('#ia_res_port_h').on('change', function () { s.resPortraitH = parseInt($(this).val()) || 1216; save(); });
@@ -748,7 +776,6 @@ async function runEvaluation(force = false, triggeredMessageId = null) {
     if (!force && s.triggerMode === 'interval') {
         messageTurnCounter++;
         if (messageTurnCounter % (s.triggerInterval || 3) !== 0) {
-            console.log(`[Illustration Agent] Interval skipping turn (${messageTurnCounter}/${s.triggerInterval})`);
             return;
         }
     }
@@ -758,12 +785,11 @@ async function runEvaluation(force = false, triggeredMessageId = null) {
         const recentMessages = context.chat.slice(-s.lookback);
         const lastMsg = recentMessages[recentMessages.length - 1];
 
-        // Format dialog context
         const contextText = recentMessages.map(m => `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${m.mes}`).join('\n\n');
         const activeChar = context.characters?.[context.characterId];
         const charDescription = activeChar?.data?.description || activeChar?.description || '';
 
-        const fullPrompt = `${s.marinaraPrompt}
+        const fullPrompt = `${s.unifiedPrompt || defaultUnifiedSystemPrompt}
 
 Current Character Reference:
 Name: ${activeChar?.name || 'Character'}
@@ -780,7 +806,6 @@ ${lastMsg.mes}
         $('#ia_gallery_bubble').addClass('is-generating');
         $('#ia_bubble_icon').removeClass('fa-camera-retro').addClass('fa-wand-magic-sparkles fa-spin');
         
-        // Show evaluation notification on screen
         toastr.info('Autonomous Illustrator: Evaluating latest scene...', 'Marinara');
 
         const rawResponse = await queryAgentLLM(fullPrompt);
@@ -797,8 +822,11 @@ ${lastMsg.mes}
 
         console.log('[Illustration Agent Decision]', result);
 
-        // MUTUAL EXCLUSION: Background takes priority over character art
-        if (result.generateBackground) {
+        const shouldGen = (result.decision === 'yes') || (result.shouldGenerate === true);
+        const isBg = (result.target === 'background') || (result.generateBackground === true);
+
+        // MUTUAL EXCLUSION
+        if (shouldGen && isBg) {
             const loc = result.location || 'New Scene';
             const matchedBg = findExistingBackground(loc);
 
@@ -807,7 +835,7 @@ ${lastMsg.mes}
                 await context.executeSlashCommands(`/bg ${matchedBg.url}`);
                 resetGeneratingIndicator();
             } else {
-                toastr.info(`Decision: Generating background for "${loc}"`, 'Marinara');
+                toastr.info(`Decision: Generating background: "${loc}"`, 'Marinara');
                 enqueueTask(async () => {
                     const bgPositive = [s.stylePrefix, result.prompt, 'scenery, landscape, interior, detailed background, no people, empty scene'].filter(Boolean).join(', ');
                     const bgNegative = [s.defaultNegative, 'character, person, people, human, face, girl, boy, 1girl'].filter(Boolean).join(', ');
@@ -824,8 +852,8 @@ ${lastMsg.mes}
                     resetGeneratingIndicator();
                 });
             }
-        } else if (force || result.shouldGenerate === true) {
-            toastr.success(`Decision: Illustrating scene: ${result.reason || 'Moment detected'}`, 'Marinara');
+        } else if (force || shouldGen) {
+            toastr.success(`Decision: Illustrating scene (${result.reason || 'Moment detected'})`, 'Marinara');
             const combinedPos = [s.stylePrefix, result.prompt].filter(Boolean).join(', ');
             const combinedNeg = [s.defaultNegative, result.negativePrompt].filter(Boolean).join(', ');
 
@@ -837,7 +865,7 @@ ${lastMsg.mes}
                 });
             }
         } else {
-            toastr.info(`Decision: Scene is static, no art needed. (${result.reason || 'No shift'})`, 'Marinara');
+            toastr.info(`Decision: Static scene, no illustration needed. (${result.reason || 'No shift'})`, 'Marinara');
             resetGeneratingIndicator();
         }
     } catch (e) {
@@ -887,45 +915,45 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
     }
 
     const totalBatch = s.batchCount || 1;
-    const generatedUrls = [];
+    const generatedResults = [];
 
     try {
         for (let i = 0; i < totalBatch; i++) {
             if (s.imageBackend === 'comfyui_direct') {
-                const imageUrl = await generateComfyImage(positive, negative, width, height, metadata);
-                if (imageUrl) generatedUrls.push(imageUrl);
+                const res = await generateComfyImage(positive, negative, width, height, metadata);
+                if (res) generatedResults.push(res);
             } else {
                 await context.executeSlashCommands(`/imagine ${positive}`);
             }
         }
 
-        if (generatedUrls.length === 1) {
-            injectImageIntoChatMessage(generatedUrls[0], metadata.description);
-        } else if (generatedUrls.length > 1) {
-            showBatchCandidatePicker(generatedUrls, metadata.description);
+        if (generatedResults.length === 1) {
+            deliverRoleplayImage(generatedResults[0].cleanUrl, metadata.description);
+        } else if (generatedResults.length > 1) {
+            showBatchCandidatePicker(generatedResults, metadata.description);
         }
     } finally {
         resetGeneratingIndicator();
     }
 }
 
-function showBatchCandidatePicker(urls, description) {
+function showBatchCandidatePicker(results, description) {
     const $grid = $('#ia_batch_grid').empty();
 
-    urls.forEach((url, idx) => {
+    results.forEach((item, idx) => {
         const $item = $(`
-            <div class="ia-batch-item" title="Click to insert Variation #${idx + 1} into Roleplay">
-                <img src="${url}" />
-                <div style="padding: 6px; text-align: center; font-size: 0.85em; background: rgba(0,0,0,0.4);">
+            <div class="ia-batch-item" title="Click to select Variation #${idx + 1}">
+                <img src="${item.cleanUrl}" />
+                <div style="padding: 6px; text-align: center; font-size: 0.85em; background: rgba(0, 0, 0, 0.4);">
                     <b>Variation #${idx + 1}</b>
                 </div>
             </div>
         `);
 
         $item.on('click', () => {
-            injectImageIntoChatMessage(url, description);
+            deliverRoleplayImage(item.cleanUrl, description);
             $('#ia_batch_picker_modal').fadeOut(150);
-            toastr.success(`Inserted Variation #${idx + 1} into roleplay!`, 'Marinara');
+            toastr.success(`Inserted Variation #${idx + 1}!`, 'Marinara');
         });
 
         $grid.append($item);
@@ -959,41 +987,72 @@ async function pollComfyResult(comfyUrl, promptId, maxAttempts = 75) {
     throw new Error('ComfyUI generation timed out.');
 }
 
-// Injects the image and vision perception description into chat
-function injectImageIntoChatMessage(imageUrl, description) {
+// Delivers the image either appended to the turn or as a separate hidden card
+function deliverRoleplayImage(cleanImageUrl, description) {
     const context = SillyTavern.getContext();
     if (!context || !context.chat || context.chat.length === 0) return;
 
-    let messageIndex = context.chat.length - 1;
-    while (messageIndex >= 0 && context.chat[messageIndex].is_user) {
-        messageIndex--;
-    }
-    if (messageIndex < 0) messageIndex = context.chat.length - 1;
+    const s = context.extensionSettings[MODULE_NAME];
+    const delivery = s.deliveryMode || 'attached';
+    const descText = description || 'Scene Illustration';
 
-    const targetMsg = context.chat[messageIndex];
-    const descText = description || 'A photo of the scene';
+    if (delivery === 'separate') {
+        // Mode B: SEPARATE MESSAGE (Hidden from LLM prompt context)
+        const systemMessage = {
+            name: 'Scene Art',
+            is_user: false,
+            is_system: true,
+            send_date: new Date().toISOString(),
+            mes: `![${descText}](${cleanImageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`,
+            extra: {
+                is_system: true,
+                exclude_from_context: true // Tells SillyTavern never to send this card to the LLM
+            }
+        };
 
-    const imageMarkdown = `\n\n![[Scene Description: ${descText}]](${imageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`;
-
-    if (!targetMsg.mes.includes(imageUrl)) {
-        targetMsg.mes += imageMarkdown;
-
-        if (typeof context.updateMessage === 'function') {
-            context.updateMessage(messageIndex, targetMsg);
+        if (typeof context.addOneMessage === 'function') {
+            context.addOneMessage(systemMessage);
+        } else {
+            context.chat.push(systemMessage);
+            context.saveChatDebounced?.();
+            context.reloadCurrentChat?.();
         }
-        if (typeof context.saveChatDebounced === 'function') {
-            context.saveChatDebounced();
-        }
+        toastr.success('Illustration added as separate card (excluded from LLM context).', 'Marinara');
 
-        const $mesElement = $(`#chat .mes[mesid="${messageIndex}"] .mes_text, .mes_text`).last();
-        if ($mesElement.length && !$mesElement.find(`img[src="${imageUrl}"]`).length) {
-            $mesElement.append(`
-                <div class="ia-img-wrapper" style="margin-top: 10px;">
-                    <img src="${imageUrl}" alt="${descText}" title="${descText}" />
-                    <span class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</span>
-                    <button type="button" class="ia-reroll-btn"><i class="fa-solid fa-rotate-right"></i> Reroll</button>
-                </div>
-            `);
+    } else {
+        // Mode A: APPEND TO CURRENT TURN (Short clean link, NO base64 letters in edit box)
+        let messageIndex = context.chat.length - 1;
+        while (messageIndex >= 0 && context.chat[messageIndex].is_user) {
+            messageIndex--;
+        }
+        if (messageIndex < 0) messageIndex = context.chat.length - 1;
+
+        const targetMsg = context.chat[messageIndex];
+        
+        // Lightweight markdown with the clean 60-character ComfyUI URL
+        const imageMarkdown = `\n\n![[Scene Description: ${descText}]](${cleanImageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`;
+
+        if (!targetMsg.mes.includes(cleanImageUrl)) {
+            targetMsg.mes += imageMarkdown;
+
+            if (typeof context.updateMessage === 'function') {
+                context.updateMessage(messageIndex, targetMsg);
+            }
+            if (typeof context.saveChatDebounced === 'function') {
+                context.saveChatDebounced();
+            }
+
+            // Direct DOM insertion fallback
+            const $mesElement = $(`#chat .mes[mesid="${messageIndex}"] .mes_text, .mes_text`).last();
+            if ($mesElement.length && !$mesElement.find(`img[src="${cleanImageUrl}"]`).length) {
+                $mesElement.append(`
+                    <div class="ia-img-wrapper" style="margin-top: 10px;">
+                        <img src="${cleanImageUrl}" alt="${descText}" title="${descText}" />
+                        <span class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</span>
+                        <button type="button" class="ia-reroll-btn"><i class="fa-solid fa-rotate-right"></i> Reroll</button>
+                    </div>
+                `);
+            }
         }
     }
 }
@@ -1055,8 +1114,11 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
         const data = await resp.json();
         toastr.info(`ComfyUI Running (${data.prompt_id})...`, 'Marinara');
 
-        const rawImageUrl = await pollComfyResult(comfyBaseUrl, data.prompt_id);
-        const base64Url = await convertUrlToBase64(rawImageUrl);
+        // Short clean URL (~60 characters, no base64)
+        const cleanUrl = await pollComfyResult(comfyBaseUrl, data.prompt_id);
+
+        // Convert only for the gallery database
+        const base64Url = await convertUrlToBase64(cleanUrl);
 
         recordImage({
             id: Date.now() + Math.random().toString(36).substr(2, 4),
@@ -1070,10 +1132,11 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
             type: metadata.isBackground ? 'background' : 'illustration',
             location: metadata.location || '',
             reason: metadata.reason,
-            url: base64Url
+            url: base64Url,
+            cleanUrl: cleanUrl
         });
 
-        return base64Url;
+        return { cleanUrl, base64Url };
     } catch (e) {
         console.error('[ComfyUI Direct Error]', e);
         toastr.error(`ComfyUI execution failed: ${e.message}`, 'Marinara');
@@ -1113,7 +1176,7 @@ function renderGalleryNav() {
 
     $('.ia-nav-filter, .ia-nav-char').off('click').on('click', function () {
         $('.ia-nav-filter, .ia-nav-char').css('background', 'transparent');
-        $(this).css('background', 'rgba(255,255,255,0.15)');
+        $(this).css('background', 'rgba(255, 255, 255, 0.15)');
 
         if ($(this).hasClass('ia-nav-filter')) {
             renderGalleryContent(null, $(this).data('filter'));
@@ -1141,8 +1204,9 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     }
 
     records.forEach(r => {
-        const imageMarkup = r.url
-            ? `<img src="${r.url}" loading="lazy" />`
+        const displayUrl = r.url || r.cleanUrl;
+        const imageMarkup = displayUrl
+            ? `<img src="${displayUrl}" loading="lazy" />`
             : `<div style="background: #111; height: 160px; display: flex; align-items: center; justify-content: center; font-size: 2em; color: #555;"><i class="fa-solid fa-image"></i></div>`;
 
         const tagBadge = r.type === 'background'
@@ -1170,16 +1234,17 @@ function renderGalleryContent(filterChar = null, filterType = null) {
 
         $card.find('.ia-set-bg-btn').on('click', async (e) => {
             e.stopPropagation();
-            if (r.url) {
-                await SillyTavern.getContext().executeSlashCommands(`/bg ${r.url}`);
+            const bgTarget = r.cleanUrl || r.url;
+            if (bgTarget) {
+                await SillyTavern.getContext().executeSlashCommands(`/bg ${bgTarget}`);
                 toastr.success(`Set wallpaper: ${r.location || 'Scene'}`, 'Marinara');
             }
         });
 
         $card.find('.ia-insert-roleplay-btn').on('click', async (e) => {
             e.stopPropagation();
-            injectImageIntoChatMessage(r.url, r.description);
-            toastr.success('Inserted photo & vision description into chat!', 'Marinara');
+            deliverRoleplayImage(r.cleanUrl || r.url, r.description);
+            toastr.success('Delivered photo & description into chat!', 'Marinara');
             closeGalleryWindow();
         });
 
@@ -1217,11 +1282,10 @@ jQuery(async () => {
     const events = context.event_types || context.eventTypes || SillyTavern.event_types || SillyTavern.eventTypes || {};
 
     function handleAssistantTurnFinished(msgId) {
-        // Prevent duplicate firing on the same message
-        if (msgId !== undefined && msgId !== null && lastEvaluatedMsgId === msgId) {
+        if (msgId !== undefined && msgId !== null && lastHandledMessageId === msgId) {
             return;
         }
-        lastEvaluatedMsgId = msgId;
+        lastHandledMessageId = msgId;
 
         attachInChatMessageButtons();
 
@@ -1235,21 +1299,17 @@ jQuery(async () => {
     }
 
     if (eventSource && events) {
-        // 1. Primary Hook: Fires when character message completes rendering
         const charRenderEvt = events.CHARACTER_MESSAGE_RENDERED || 'character_message_rendered';
         eventSource.on(charRenderEvt, (msgId) => {
             handleAssistantTurnFinished(msgId);
         });
 
-        // 2. Secondary Hook: Fires when message is received
         const msgRecvEvt = events.MESSAGE_RECEIVED || 'message_received';
         eventSource.on(msgRecvEvt, (msgId) => {
-            // Guard: ensure it's not a user message
             if (context.chat && msgId !== undefined && context.chat[msgId]?.is_user) return;
             handleAssistantTurnFinished(msgId);
         });
 
-        // 3. Fallback: Fires when generation engine completes
         const genEndEvt = events.GENERATION_ENDED || 'generation_ended';
         eventSource.on(genEndEvt, () => {
             handleAssistantTurnFinished(null);
@@ -1257,5 +1317,5 @@ jQuery(async () => {
     }
 
     setInterval(attachInChatMessageButtons, 2500);
-    console.log('[Illustration Agent] Autonomous Engine & Android Chat-Head Loaded.');
+    console.log('[Illustration Agent] Unified Pipeline Ready.');
 });
