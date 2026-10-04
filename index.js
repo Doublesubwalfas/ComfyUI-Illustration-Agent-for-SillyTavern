@@ -47,7 +47,7 @@ const defaultSettings = {
     resBgW: 1344,
     resBgH: 768,
 
-    // ComfyUI
+    // ComfyUI Defaults
     comfySteps: 20,
     comfyCfg: 4.5,
     comfySampler: 'euler_ancestral',
@@ -68,6 +68,7 @@ const defaultSettings = {
 let imageGalleryDb = [];
 let isEvaluating = false;
 let messageTurnCounter = 0;
+let lastEvaluatedMsgId = null;
 
 // Sequential Task Queue
 const taskQueue = [];
@@ -175,11 +176,11 @@ function inspectWorkflowMacros() {
     });
 }
 
-// 1. Inject UI Elements (Mounted to Body to remain visible when settings are closed)
+// 1. Inject UI Elements
 function injectUI() {
     if ($('#ia_main_container').length > 0) return;
 
-    // A. Settings Drawer
+    // Settings Drawer
     const settingsHtml = `
     <div id="ia_main_container" class="illustration-agent-settings" style="margin-bottom: 12px;">
         <div class="inline-drawer">
@@ -394,81 +395,77 @@ function injectUI() {
     const container = $('#extensions_settings').length ? $('#extensions_settings') : $('#extensions_settings2');
     container.append(settingsHtml);
 
-    // B. Floating Modals & Android Bubble (Mounted to BODY to stay alive independently)
-    const bodyFloatingHtml = `
-    <!-- Draggable Android Chat-Head Bubble -->
-    <div id="ia_gallery_bubble" title="Drag anywhere or tap to open gallery">
-        <i id="ia_bubble_icon" class="fa-solid fa-camera-retro"></i>
-        <div id="ia_gallery_bubble_badge">0</div>
-    </div>
+    // Floating Modals & Android Bubble attached to BODY
+    if ($('#ia_gallery_bubble').length === 0) {
+        const bodyFloatingHtml = `
+        <div id="ia_gallery_bubble" title="Drag anywhere or tap to open gallery">
+            <i id="ia_bubble_icon" class="fa-solid fa-camera-retro"></i>
+            <div id="ia_gallery_bubble_badge">0</div>
+        </div>
 
-    <!-- Review Modal Container -->
-    <div id="ia_review_modal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 500px; max-width: 90vw; background: var(--SmartThemeBlurTintColor, #202028); border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; z-index: 100000; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.85);">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-            <b><i class="fa-solid fa-pen-to-square"></i> Review Scene Illustration</b>
-            <div id="ia_close_review" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
-        </div>
-        <div class="ia-row">
-            <label><b>Description (Perceived by Character LLM):</b></label>
-            <input type="text" id="ia_rev_desc" class="text_pole">
-        </div>
-        <div class="ia-row">
-            <label><b>Positive Prompt (Image Generator):</b></label>
-            <textarea id="ia_rev_positive" class="text_pole" rows="3"></textarea>
-        </div>
-        <div class="ia-row">
-            <label><b>Negative Prompt:</b></label>
-            <textarea id="ia_rev_negative" class="text_pole" rows="2"></textarea>
-        </div>
-        <div class="ia-row">
-            <label><b>Aspect Ratio:</b></label>
-            <select id="ia_rev_ar" class="text_pole">
-                <option value="portrait">Portrait</option>
-                <option value="landscape">Landscape</option>
-                <option value="square">Square</option>
-            </select>
-        </div>
-        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;">
-            <button type="button" id="ia_rev_cancel" class="menu_button">Cancel</button>
-            <button type="button" id="ia_rev_confirm" class="menu_button" style="background: #27ae60; color: white;">Generate Now</button>
-        </div>
-    </div>
-
-    <!-- Batch Candidate Picker Modal -->
-    <div id="ia_batch_picker_modal" style="display: none;">
-        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">
-            <b><i class="fa-solid fa-images"></i> Choose Image for Roleplay</b>
-            <div id="ia_close_batch_picker" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
-        </div>
-        <small style="opacity: 0.8; margin-top: 6px;">Tap the variation you want inserted into the chat. All candidates are saved in the gallery.</small>
-        <div id="ia_batch_grid" class="ia-batch-grid"></div>
-    </div>
-
-    <!-- Floating Window Gallery -->
-    <div id="ia_gallery_modal" style="display: none;">
-        <div class="ia-gallery-header">
-            <b><i class="fa-solid fa-images" style="color: #ff7675; margin-right: 6px;"></i>Illustration Gallery</b>
-            <div class="ia-gallery-controls">
-                <label class="checkbox_label" style="font-size: 0.85em; margin-right: 6px;">
-                    <input type="checkbox" id="ia_gallery_flat_toggle">
-                    <span>Flat View</span>
-                </label>
-                <button type="button" id="ia_win_min_btn" class="ia-win-btn" title="Minimize to Bubble"><i class="fa-solid fa-minus"></i></button>
-                <button type="button" id="ia_win_close_btn" class="ia-win-btn" title="Close"><i class="fa-solid fa-xmark"></i></button>
+        <div id="ia_review_modal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 500px; max-width: 90vw; background: var(--SmartThemeBlurTintColor, #202028); border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; z-index: 100000; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.85);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <b><i class="fa-solid fa-pen-to-square"></i> Review Scene Illustration</b>
+                <div id="ia_close_review" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
+            </div>
+            <div class="ia-row">
+                <label><b>Description (Perceived by Character LLM):</b></label>
+                <input type="text" id="ia_rev_desc" class="text_pole">
+            </div>
+            <div class="ia-row">
+                <label><b>Positive Prompt (Image Generator):</b></label>
+                <textarea id="ia_rev_positive" class="text_pole" rows="3"></textarea>
+            </div>
+            <div class="ia-row">
+                <label><b>Negative Prompt:</b></label>
+                <textarea id="ia_rev_negative" class="text_pole" rows="2"></textarea>
+            </div>
+            <div class="ia-row">
+                <label><b>Aspect Ratio:</b></label>
+                <select id="ia_rev_ar" class="text_pole">
+                    <option value="portrait">Portrait</option>
+                    <option value="landscape">Landscape</option>
+                    <option value="square">Square</option>
+                </select>
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;">
+                <button type="button" id="ia_rev_cancel" class="menu_button">Cancel</button>
+                <button type="button" id="ia_rev_confirm" class="menu_button" style="background: #27ae60; color: white;">Generate Now</button>
             </div>
         </div>
-        <div class="ia-gallery-body">
-            <div id="ia_gallery_nav" class="ia-gallery-sidebar"></div>
-            <div id="ia_gallery_content" class="ia-gallery-grid"></div>
-        </div>
-    </div>
-    `;
 
-    $('body').append(bodyFloatingHtml);
+        <div id="ia_batch_picker_modal" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">
+                <b><i class="fa-solid fa-images"></i> Choose Image for Roleplay</b>
+                <div id="ia_close_batch_picker" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
+            </div>
+            <small style="opacity: 0.8; margin-top: 6px;">Tap the variation you want inserted into the chat. All candidates are saved in the gallery.</small>
+            <div id="ia_batch_grid" class="ia-batch-grid"></div>
+        </div>
+
+        <div id="ia_gallery_modal" style="display: none;">
+            <div class="ia-gallery-header">
+                <b><i class="fa-solid fa-images" style="color: #ff7675; margin-right: 6px;"></i>Illustration Gallery</b>
+                <div class="ia-gallery-controls">
+                    <label class="checkbox_label" style="font-size: 0.85em; margin-right: 6px;">
+                        <input type="checkbox" id="ia_gallery_flat_toggle">
+                        <span>Flat View</span>
+                    </label>
+                    <button type="button" id="ia_win_min_btn" class="ia-win-btn" title="Minimize to Bubble"><i class="fa-solid fa-minus"></i></button>
+                    <button type="button" id="ia_win_close_btn" class="ia-win-btn" title="Close"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+            </div>
+            <div class="ia-gallery-body">
+                <div id="ia_gallery_nav" class="ia-gallery-sidebar"></div>
+                <div id="ia_gallery_content" class="ia-gallery-grid"></div>
+            </div>
+        </div>
+        `;
+        $('body').append(bodyFloatingHtml);
+    }
 
     $('#ia_drawer_content').on('click', (e) => e.stopPropagation());
-    
-    // Bind Windows & Buttons
+
     $('#ia_open_gallery_btn').on('click', (e) => { e.stopPropagation(); openGalleryWindow(); });
     $('#ia_win_min_btn').on('click', minimizeGalleryWindow);
     $('#ia_win_close_btn').on('click', closeGalleryWindow);
@@ -478,14 +475,13 @@ function injectUI() {
     setupAndroidBubbleDraggable();
 }
 
-// Android Chat-Head Draggable & Edge-Snapping Behavior
 function setupAndroidBubbleDraggable() {
     const $bubble = $('#ia_gallery_bubble');
     let isDragging = false;
     let startX, startY, initLeft, initTop;
     let thresholdExceeded = false;
 
-    $bubble.on('touchstart mousedown', function (e) {
+    $bubble.off('touchstart mousedown').on('touchstart mousedown', function (e) {
         const evt = e.touches ? e.touches[0] : e;
         isDragging = true;
         thresholdExceeded = false;
@@ -498,7 +494,7 @@ function setupAndroidBubbleDraggable() {
         $bubble.css({ transition: 'none' });
     });
 
-    $(document).on('touchmove mousemove', function (e) {
+    $(document).off('touchmove mousemove.iabubble').on('touchmove mousemove.iabubble', function (e) {
         if (!isDragging) return;
         const evt = e.touches ? e.touches[0] : e;
         const dx = evt.clientX - startX;
@@ -524,7 +520,7 @@ function setupAndroidBubbleDraggable() {
         }
     });
 
-    $(document).on('touchend mouseup', function () {
+    $(document).off('touchend mouseup.iabubble').on('touchend mouseup.iabubble', function () {
         if (!isDragging) return;
         isDragging = false;
 
@@ -659,12 +655,11 @@ function bindUI() {
     $('#ia_manual_eval_btn').on('click', (e) => { e.stopPropagation(); runEvaluation(true); });
     $('#ia_gallery_flat_toggle').on('change', () => renderGalleryContent());
 
-    // Diagnostics Test Handlers
     $('#ia_ping_llm_btn').on('click', pingLLM);
     $('#ia_ping_image_btn').on('click', pingImageBackend);
 }
 
-// 3. Connection Diagnostics (Ping Functions)
+// 3. Diagnostics
 async function pingLLM() {
     toastr.info('Testing connection to LLM...', 'Diagnostics');
     const start = performance.now();
@@ -742,7 +737,7 @@ function findExistingBackground(locationName) {
 }
 
 // 5. Main Evaluation Engine
-async function runEvaluation(force = false) {
+async function runEvaluation(force = false, triggeredMessageId = null) {
     if (isEvaluating) return;
     const context = SillyTavern.getContext();
     const s = context.extensionSettings[MODULE_NAME];
@@ -753,6 +748,7 @@ async function runEvaluation(force = false) {
     if (!force && s.triggerMode === 'interval') {
         messageTurnCounter++;
         if (messageTurnCounter % (s.triggerInterval || 3) !== 0) {
+            console.log(`[Illustration Agent] Interval skipping turn (${messageTurnCounter}/${s.triggerInterval})`);
             return;
         }
     }
@@ -762,6 +758,7 @@ async function runEvaluation(force = false) {
         const recentMessages = context.chat.slice(-s.lookback);
         const lastMsg = recentMessages[recentMessages.length - 1];
 
+        // Format dialog context
         const contextText = recentMessages.map(m => `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${m.mes}`).join('\n\n');
         const activeChar = context.characters?.[context.characterId];
         const charDescription = activeChar?.data?.description || activeChar?.description || '';
@@ -782,7 +779,9 @@ ${lastMsg.mes}
         // Activate Android Bubble visual indicator
         $('#ia_gallery_bubble').addClass('is-generating');
         $('#ia_bubble_icon').removeClass('fa-camera-retro').addClass('fa-wand-magic-sparkles fa-spin');
-        toastr.info('Autonomous Illustrator: Analyzing latest turn...', 'Marinara');
+        
+        // Show evaluation notification on screen
+        toastr.info('Autonomous Illustrator: Evaluating latest scene...', 'Marinara');
 
         const rawResponse = await queryAgentLLM(fullPrompt);
         if (!rawResponse) {
@@ -798,18 +797,18 @@ ${lastMsg.mes}
 
         console.log('[Illustration Agent Decision]', result);
 
-        // MUTUAL EXCLUSION: Background takes priority over character art to avoid collisions
+        // MUTUAL EXCLUSION: Background takes priority over character art
         if (result.generateBackground) {
             const loc = result.location || 'New Scene';
             const matchedBg = findExistingBackground(loc);
 
             if (matchedBg) {
-                toastr.success(`Reusing background: "${matchedBg.location}"`, 'Marinara');
+                toastr.success(`Decision: Reusing saved background: "${matchedBg.location}"`, 'Marinara');
                 await context.executeSlashCommands(`/bg ${matchedBg.url}`);
                 resetGeneratingIndicator();
             } else {
+                toastr.info(`Decision: Generating background for "${loc}"`, 'Marinara');
                 enqueueTask(async () => {
-                    toastr.info(`Queue: Generating background for "${loc}"...`, 'Marinara');
                     const bgPositive = [s.stylePrefix, result.prompt, 'scenery, landscape, interior, detailed background, no people, empty scene'].filter(Boolean).join(', ');
                     const bgNegative = [s.defaultNegative, 'character, person, people, human, face, girl, boy, 1girl'].filter(Boolean).join(', ');
 
@@ -826,7 +825,7 @@ ${lastMsg.mes}
                 });
             }
         } else if (force || result.shouldGenerate === true) {
-            // Roleplay illustration
+            toastr.success(`Decision: Illustrating scene: ${result.reason || 'Moment detected'}`, 'Marinara');
             const combinedPos = [s.stylePrefix, result.prompt].filter(Boolean).join(', ');
             const combinedNeg = [s.defaultNegative, result.negativePrompt].filter(Boolean).join(', ');
 
@@ -838,13 +837,13 @@ ${lastMsg.mes}
                 });
             }
         } else {
-            toastr.info('Illustrator: Scene is static; no illustration needed.', 'Marinara');
+            toastr.info(`Decision: Scene is static, no art needed. (${result.reason || 'No shift'})`, 'Marinara');
             resetGeneratingIndicator();
         }
     } catch (e) {
         console.error('[Illustration Agent Error]', e);
         resetGeneratingIndicator();
-        toastr.error('Evaluation failed. See browser console.', 'Marinara');
+        toastr.error('Evaluation failed: ' + e.message, 'Marinara');
     } finally {
         isEvaluating = false;
     }
@@ -871,11 +870,10 @@ function promptReviewModal(pos, neg, ar, metadata) {
     });
 }
 
-// 6. Image Pipeline Execution & Batch Candidate Handling
+// 6. Image Pipeline Execution
 async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
     const context = SillyTavern.getContext();
     const s = context.extensionSettings[MODULE_NAME];
-    toastr.success(`Illustrating: ${metadata.description || metadata.reason || 'Active Moment'}`, 'Marinara');
 
     let width = s.resPortraitW;
     let height = s.resPortraitH;
@@ -902,10 +900,8 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
         }
 
         if (generatedUrls.length === 1) {
-            // Single image: directly inject into roleplay
             injectImageIntoChatMessage(generatedUrls[0], metadata.description);
         } else if (generatedUrls.length > 1) {
-            // Multiple images: prompt user to pick the one for roleplay
             showBatchCandidatePicker(generatedUrls, metadata.description);
         }
     } finally {
@@ -963,7 +959,7 @@ async function pollComfyResult(comfyUrl, promptId, maxAttempts = 75) {
     throw new Error('ComfyUI generation timed out.');
 }
 
-// Injects the image and the narrative vision description for non-multimodal LLMs
+// Injects the image and vision perception description into chat
 function injectImageIntoChatMessage(imageUrl, description) {
     const context = SillyTavern.getContext();
     if (!context || !context.chat || context.chat.length === 0) return;
@@ -977,7 +973,6 @@ function injectImageIntoChatMessage(imageUrl, description) {
     const targetMsg = context.chat[messageIndex];
     const descText = description || 'A photo of the scene';
 
-    // Formatted so non-multimodal LLMs read the description during roleplay
     const imageMarkdown = `\n\n![[Scene Description: ${descText}]](${imageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`;
 
     if (!targetMsg.mes.includes(imageUrl)) {
@@ -990,7 +985,6 @@ function injectImageIntoChatMessage(imageUrl, description) {
             context.saveChatDebounced();
         }
 
-        // Direct DOM update guarantee
         const $mesElement = $(`#chat .mes[mesid="${messageIndex}"] .mes_text, .mes_text`).last();
         if ($mesElement.length && !$mesElement.find(`img[src="${imageUrl}"]`).length) {
             $mesElement.append(`
@@ -1182,7 +1176,6 @@ function renderGalleryContent(filterChar = null, filterType = null) {
             }
         });
 
-        // Inserts previously generated gallery photo directly into the active roleplay turn
         $card.find('.ia-insert-roleplay-btn').on('click', async (e) => {
             e.stopPropagation();
             injectImageIntoChatMessage(r.url, r.description);
@@ -1220,36 +1213,49 @@ jQuery(async () => {
     bindUI();
 
     const context = SillyTavern.getContext();
-    const { eventSource, eventTypes } = context;
+    const eventSource = context.eventSource || SillyTavern.eventSource;
+    const events = context.event_types || context.eventTypes || SillyTavern.event_types || SillyTavern.eventTypes || {};
 
-    if (eventSource && eventTypes) {
-        // Pre-generation
-        const startEvt = eventTypes.CHAT_COMPLETION_STARTED || 'chat_completion_started';
-        eventSource.on(startEvt, () => {
-            if (context.extensionSettings[MODULE_NAME]?.pipelinePhase === 'pre') {
-                runEvaluation(false);
-            }
-        });
+    function handleAssistantTurnFinished(msgId) {
+        // Prevent duplicate firing on the same message
+        if (msgId !== undefined && msgId !== null && lastEvaluatedMsgId === msgId) {
+            return;
+        }
+        lastEvaluatedMsgId = msgId;
 
-        // Turn completion hook (covers both CHAT_COMPLETION_FINISHED and MESSAGE_RECEIVED)
-        const finishEvt = eventTypes.CHAT_COMPLETION_FINISHED || 'chat_completion_finished';
-        eventSource.on(finishEvt, () => {
-            attachInChatMessageButtons();
-            const phase = context.extensionSettings[MODULE_NAME]?.pipelinePhase || 'post';
-            if (phase === 'post' || phase === 'parallel') {
-                runEvaluation(false);
-            }
-        });
+        attachInChatMessageButtons();
 
-        if (eventTypes.MESSAGE_RECEIVED) {
-            eventSource.on(eventTypes.MESSAGE_RECEIVED, (data) => {
-                if (data && !data.is_user && context.extensionSettings[MODULE_NAME]?.enabled) {
-                    attachInChatMessageButtons();
-                }
-            });
+        const s = context.extensionSettings[MODULE_NAME];
+        if (!s || !s.enabled) return;
+
+        const phase = s.pipelinePhase || 'post';
+        if (phase === 'post' || phase === 'parallel') {
+            runEvaluation(false, msgId);
         }
     }
 
+    if (eventSource && events) {
+        // 1. Primary Hook: Fires when character message completes rendering
+        const charRenderEvt = events.CHARACTER_MESSAGE_RENDERED || 'character_message_rendered';
+        eventSource.on(charRenderEvt, (msgId) => {
+            handleAssistantTurnFinished(msgId);
+        });
+
+        // 2. Secondary Hook: Fires when message is received
+        const msgRecvEvt = events.MESSAGE_RECEIVED || 'message_received';
+        eventSource.on(msgRecvEvt, (msgId) => {
+            // Guard: ensure it's not a user message
+            if (context.chat && msgId !== undefined && context.chat[msgId]?.is_user) return;
+            handleAssistantTurnFinished(msgId);
+        });
+
+        // 3. Fallback: Fires when generation engine completes
+        const genEndEvt = events.GENERATION_ENDED || 'generation_ended';
+        eventSource.on(genEndEvt, () => {
+            handleAssistantTurnFinished(null);
+        });
+    }
+
     setInterval(attachInChatMessageButtons, 2500);
-    console.log('[Illustration Agent] Autonomous Engine & Android Chat-Head Initialized.');
+    console.log('[Illustration Agent] Autonomous Engine & Android Chat-Head Loaded.');
 });
