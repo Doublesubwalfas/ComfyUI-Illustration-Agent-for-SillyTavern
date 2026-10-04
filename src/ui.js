@@ -798,14 +798,14 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     let htmlStr = '';
     records.forEach(r => {
         const displayUrl = r.url || r.cleanUrl;
-        const imageMarkup = displayUrl ? `<img src="${displayUrl}" loading="lazy" class="ia-clickable-img" />` : `<div style="background: #111; height: 160px; display: flex; align-items: center; justify-content: center;"><i class="fa-solid fa-image"></i></div>`;
+        const imageMarkup = displayUrl ? `<img src="${displayUrl}" loading="lazy" class="ia-clickable-img" />` : `<div style="background: #111; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;"><i class="fa-solid fa-image"></i></div>`;
         const heartClass = r.favorite ? "fa-solid fa-heart" : "fa-regular fa-heart";
         const selClass = window._iaSelectedIds.has(r.id) ? "ia-selected" : "";
 
         htmlStr += `
             <div class="ia-card ${selClass}" data-id="${r.id}">
                 <div class="ia-card-sel-overlay"><i class="fa-solid fa-circle-check" style="color: #2ecc71; font-size: 3em; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);"></i></div>
-                <div style="position:relative; width:100%; display:flex;">
+                <div class="ia-card-img-wrap">
                     ${imageMarkup}
                     <div class="ia-card-fav-btn" title="Toggle Favorite"><i class="${heartClass}"></i></div>
                 </div>
