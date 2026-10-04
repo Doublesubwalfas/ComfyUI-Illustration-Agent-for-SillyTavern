@@ -184,21 +184,21 @@ export function setupUI() {
                     <div class="ia-section-title"><i class="fa-solid fa-crop-simple"></i> Resolution (W × H)</div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
                         <div>
-                            <label><small>Portrait (Roleplay)</small></label>
+                            <label><small>Portrait</small></label>
                             <div style="display: flex; gap: 4px;">
                                 <input type="number" id="ia_res_port_w" class="text_pole" placeholder="832">
                                 <input type="number" id="ia_res_port_h" class="text_pole" placeholder="1216">
                             </div>
                         </div>
                         <div>
-                            <label><small>Landscape (Roleplay)</small></label>
+                            <label><small>Landscape</small></label>
                             <div style="display: flex; gap: 4px;">
                                 <input type="number" id="ia_res_land_w" class="text_pole" placeholder="1216">
                                 <input type="number" id="ia_res_land_h" class="text_pole" placeholder="832">
                             </div>
                         </div>
                         <div>
-                            <label><small>Square (Roleplay)</small></label>
+                            <label><small>Square</small></label>
                             <div style="display: flex; gap: 4px;">
                                 <input type="number" id="ia_res_sq_w" class="text_pole" placeholder="1024">
                                 <input type="number" id="ia_res_sq_h" class="text_pole" placeholder="1024">
