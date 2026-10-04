@@ -1,6 +1,6 @@
 import { setupUI } from './src/ui.js';
 import { runEvaluation } from './src/agent.js';
-import { attachInChatMessageButtons } from './src/chat.js';
+import { attachInChatMessageButtons, cleanTriggerTags } from './src/chat.js';
 import { getSettings } from './src/config.js';
 
 let lastHandledMessageId = null;
@@ -18,6 +18,24 @@ jQuery(async () => {
         }
         lastHandledMessageId = msgId;
 
+        // Clean any visible {image} or {scene} trigger tags from the current message
+        if (context.chat && msgId !== undefined && context.chat[msgId]) {
+            const currentMsg = context.chat[msgId];
+            if (!currentMsg.is_user && currentMsg.mes) {
+                const cleaned = cleanTriggerTags(currentMsg.mes);
+                if (cleaned !== currentMsg.mes) {
+                    currentMsg.mes = cleaned;
+                    if (Array.isArray(currentMsg.swipes) && currentMsg.swipes.length > 0) {
+                        const sIdx = currentMsg.swipe_id ?? (currentMsg.swipes.length - 1);
+                        if (currentMsg.swipes[sIdx]) currentMsg.swipes[sIdx] = cleanTriggerTags(currentMsg.swipes[sIdx]);
+                    }
+                    if (typeof context.updateMessage === 'function') {
+                        context.updateMessage(msgId, currentMsg);
+                    }
+                }
+            }
+        }
+
         attachInChatMessageButtons(runEvaluation);
 
         const s = getSettings();
@@ -30,20 +48,17 @@ jQuery(async () => {
     }
 
     if (eventSource && events) {
-        // Primary Hook: Assistant message completely rendered
         const charRenderEvt = events.CHARACTER_MESSAGE_RENDERED || 'character_message_rendered';
         eventSource.on(charRenderEvt, (msgId) => {
             handleAssistantTurnFinished(msgId);
         });
 
-        // Secondary Hook: Message received
         const msgRecvEvt = events.MESSAGE_RECEIVED || 'message_received';
         eventSource.on(msgRecvEvt, (msgId) => {
             if (context.chat && msgId !== undefined && context.chat[msgId]?.is_user) return;
             handleAssistantTurnFinished(msgId);
         });
 
-        // Chat switched / reloaded
         const chatChangedEvt = events.CHAT_CHANGED || 'chat_changed';
         eventSource.on(chatChangedEvt, () => {
             setTimeout(() => attachInChatMessageButtons(runEvaluation), 400);
@@ -51,5 +66,5 @@ jQuery(async () => {
     }
 
     setInterval(() => attachInChatMessageButtons(runEvaluation), 2500);
-    console.log('[Illustration Agent] Modular Architecture Active.');
+    console.log('[Illustration Agent] Mode Switcher, MultiGPU Workflow & Token Badges Ready.');
 });

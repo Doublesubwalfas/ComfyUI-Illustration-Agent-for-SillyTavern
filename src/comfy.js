@@ -16,7 +16,6 @@ export function getEffectiveComfyUrl() {
     return url;
 }
 
-// Uploads the image to SillyTavern's server to produce a short permanent link: /user/images/...
 async function uploadToSillyTavernServer(imgBlob, filename) {
     try {
         const formData = new FormData();
@@ -32,7 +31,7 @@ async function uploadToSillyTavernServer(imgBlob, filename) {
             if (data && data.path) return data.path;
         }
     } catch (e) {
-        console.warn('[Illustration Agent] Direct /api/files/upload failed, trying fallback', e);
+        console.warn('[Illustration Agent] Direct /api/files/upload fallback', e);
     }
     return null;
 }
@@ -72,8 +71,9 @@ export async function pollComfyResult(comfyUrl, promptId, maxAttempts = 75) {
 export async function generateComfyImage(positive, negative, width, height, metadata) {
     const s = getSettings();
     const comfyBaseUrl = getEffectiveComfyUrl();
+    const rawWorkflow = s.activeWorkflowText || '';
 
-    if (!s.comfyWorkflow || !s.comfyWorkflow.trim()) {
+    if (!rawWorkflow.trim()) {
         throw new Error('ComfyUI API Workflow JSON is empty.');
     }
 
@@ -83,8 +83,11 @@ export async function generateComfyImage(positive, negative, width, height, meta
     const sampler = s.comfySampler || 'euler_ancestral';
     const scheduler = s.comfyScheduler || 'normal';
     const denoise = 1.0;
+    const model = s.comfyModel || 'anima-turbo-v1.1.safetensors';
+    const clip = s.comfyClip || 'Qwen3-0.6B-heretic-abliterated-uncensored.i1-Q6_K.gguf';
+    const vae = s.comfyVae || 'qwen_image_vae.safetensors';
 
-    let rawStr = s.comfyWorkflow;
+    let rawStr = rawWorkflow;
     const safePositive = JSON.stringify(positive).slice(1, -1);
     const safeNegative = JSON.stringify(negative).slice(1, -1);
 
@@ -95,6 +98,9 @@ export async function generateComfyImage(positive, negative, width, height, meta
         .replaceAll('%negative%', safeNegative)
         .replaceAll('%sampler%', sampler)
         .replaceAll('%scheduler%', scheduler)
+        .replaceAll('%model%', model)
+        .replaceAll('%clip%', clip)
+        .replaceAll('%vae%', vae)
         .replaceAll('"%seed%"', randomSeed)
         .replaceAll('%seed%', randomSeed)
         .replaceAll('"%steps%"', steps)
@@ -125,17 +131,13 @@ export async function generateComfyImage(positive, negative, width, height, meta
     toastr.info(`ComfyUI Job Running (${data.prompt_id})...`, 'Marinara');
 
     const comfyDirectUrl = await pollComfyResult(comfyBaseUrl, data.prompt_id);
-
-    // Fetch image blob from ComfyUI
     const imgResp = await fetch(comfyDirectUrl);
     const imgBlob = await imgResp.blob();
 
-    // 1. Upload to SillyTavern's local storage for a clean permanent path
     const filename = `ia_${Date.now()}.png`;
     let serverPath = await uploadToSillyTavernServer(imgBlob, filename);
     const base64Url = await convertBlobToBase64(imgBlob);
 
-    // Final clean URL: use local ST path if available, or comfyDirectUrl as fallback
     const finalCleanUrl = serverPath || comfyDirectUrl;
 
     saveGalleryRecord({

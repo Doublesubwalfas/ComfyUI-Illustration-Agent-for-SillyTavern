@@ -1,6 +1,6 @@
 import { getSettings, getGalleryDb } from './config.js';
 import { generateComfyImage } from './comfy.js';
-import { deliverRoleplayImage } from './chat.js';
+import { deliverRoleplayImage, cleanTriggerTags } from './chat.js';
 import { promptReviewModal, showBatchCandidatePicker, resetGeneratingIndicator } from './ui.js';
 
 let isEvaluating = false;
@@ -69,36 +69,61 @@ export async function runEvaluation(force = false) {
     if (!context.chat || context.chat.length === 0) return;
     if (!force && !s.enabled) return;
 
-    if (!force && s.triggerMode === 'interval') {
+    // 1. FORCED Context Window: Strictly slice the exact lookback number
+    const lookbackCount = Math.max(1, parseInt(s.lookback) || 3);
+    const recentMessages = context.chat.slice(-lookbackCount);
+    const lastMsg = recentMessages[recentMessages.length - 1];
+
+    // Clean trigger tags for evaluation text
+    const lastMsgTextRaw = lastMsg.mes || '';
+    const hasImageTag = /\{\s*image\s*\}/i.test(lastMsgTextRaw);
+    const hasSceneTag = /\{\s*scene\s*\}/i.test(lastMsgTextRaw);
+
+    // MODE 2 EVALUATION GUARD
+    if (!force && s.agentMode === 'mode2') {
+        if (!hasImageTag && !hasSceneTag) {
+            console.log('[Illustration Agent] Mode 2: No {image} or {scene} tag found in assistant turn. Skipping.');
+            return;
+        }
+    }
+
+    // MODE 3 EVALUATION GUARD (Pure Interval)
+    if (!force && s.agentMode === 'mode3') {
         messageTurnCounter++;
-        if (messageTurnCounter % (s.triggerInterval || 3) !== 0) return;
+        if (messageTurnCounter % (s.triggerInterval || 3) !== 0) {
+            console.log(`[Illustration Agent] Mode 3: Skipping turn (${messageTurnCounter}/${s.triggerInterval})`);
+            return;
+        }
     }
 
     isEvaluating = true;
     try {
-        const recentMessages = context.chat.slice(-s.lookback);
-        const lastMsg = recentMessages[recentMessages.length - 1];
+        // Build strictly isolated context (no lorebook, no full history)
+        const contextText = recentMessages
+            .map(m => `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${cleanTriggerTags(m.mes)}`)
+            .join('\n\n');
 
-        const contextText = recentMessages.map(m => `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${m.mes}`).join('\n\n');
         const activeChar = context.characters?.[context.characterId];
         const charDescription = activeChar?.data?.description || activeChar?.description || '';
 
-        const fullPrompt = `${s.unifiedPrompt}
+        const activeSchema = s.activeSchemaText || '';
 
-Current Character Reference:
+        const fullPrompt = `${activeSchema}
+
+Character Reference:
 Name: ${activeChar?.name || 'Character'}
-Description: ${charDescription.substring(0, 800)}
+Description: ${charDescription.substring(0, 500)}
 
-Recent Context (for continuity):
+Recent Isolated Context:
 ${contextText}
 
 <assistant_response>
-${lastMsg.mes}
+${cleanTriggerTags(lastMsg.mes)}
 </assistant_response>`;
 
         $('#ia_gallery_bubble').addClass('is-generating');
         $('#ia_bubble_icon').removeClass('fa-camera-retro').addClass('fa-wand-magic-sparkles fa-spin');
-        toastr.info('Autonomous Illustrator: Evaluating latest scene...', 'Marinara');
+        toastr.info('Illustration Agent evaluating scene...', 'Marinara');
 
         const rawResponse = await queryAgentLLM(fullPrompt);
         if (!rawResponse) {
@@ -114,10 +139,38 @@ ${lastMsg.mes}
 
         console.log('[Illustration Agent Decision]', result);
 
-        const shouldGen = (result.decision === 'yes') || (result.shouldGenerate === true);
-        const isBg = (result.target === 'background') || (result.generateBackground === true);
+        // Strip trigger words from chat text immediately
+        if (hasImageTag || hasSceneTag) {
+            lastMsg.mes = cleanTriggerTags(lastMsg.mes);
+            if (Array.isArray(lastMsg.swipes) && lastMsg.swipes.length > 0) {
+                const sIdx = lastMsg.swipe_id ?? (lastMsg.swipes.length - 1);
+                if (lastMsg.swipes[sIdx]) lastMsg.swipes[sIdx] = cleanTriggerTags(lastMsg.swipes[sIdx]);
+            }
+            if (typeof context.updateMessage === 'function') {
+                context.updateMessage(context.chat.length - 1, lastMsg);
+            }
+        }
 
-        // MUTUAL EXCLUSION: Background takes priority
+        // Decision Handling based on Active Mode
+        let shouldGen = force || (result.decision === 'yes');
+        let isBg = (result.target === 'background');
+
+        // Mode 2 overrides
+        if (s.agentMode === 'mode2') {
+            shouldGen = true;
+            isBg = false; // Mode 2 has no background functionality
+            if (hasSceneTag) {
+                result.description = ''; // Only {image} carries narrative photo description
+            }
+        }
+
+        // Mode 3 overrides
+        if (s.agentMode === 'mode3') {
+            shouldGen = true;
+            isBg = false;
+        }
+
+        // MUTUAL EXCLUSION
         if (shouldGen && isBg) {
             const loc = result.location || 'New Scene';
             const matchedBg = findExistingBackground(loc);
@@ -144,8 +197,8 @@ ${lastMsg.mes}
                     resetGeneratingIndicator();
                 });
             }
-        } else if (force || shouldGen) {
-            toastr.success(`Decision: Illustrating scene (${result.reason || 'Moment detected'})`, 'Marinara');
+        } else if (shouldGen) {
+            toastr.success(`Decision: Illustrating scene (${result.reason || 'Active Moment'})`, 'Marinara');
             const combinedPos = [s.stylePrefix, result.prompt].filter(Boolean).join(', ');
             const combinedNeg = [s.defaultNegative, result.negativePrompt].filter(Boolean).join(', ');
 

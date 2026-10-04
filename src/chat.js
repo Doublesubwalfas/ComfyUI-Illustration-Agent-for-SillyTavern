@@ -1,5 +1,11 @@
 import { getSettings } from './config.js';
 
+// Regex cleaner: strips {image} and {scene} tags from chat text and memory
+export function cleanTriggerTags(text) {
+    if (!text || typeof text !== 'string') return text;
+    return text.replace(/\{\s*(image|scene)\s*\}/gi, '').trim();
+}
+
 export async function persistChat() {
     const context = SillyTavern.getContext();
     try {
@@ -22,12 +28,10 @@ export async function deliverRoleplayImage(cleanImageUrl, description) {
     const descText = description || 'Scene Illustration';
 
     if (delivery === 'separate') {
-        // Mode B: Native SillyTavern comment card (Completely excluded from LLM prompt context)
         const commentTag = `![${descText}](${cleanImageUrl})\n*(${descText})*`;
         await context.executeSlashCommands(`/comment ${commentTag}`);
         toastr.success('Illustration added as separate hidden card.', 'Marinara');
     } else {
-        // Mode A: Attached cleanly to character message (Permanent & Swipe-Synced)
         let messageIndex = context.chat.length - 1;
         while (messageIndex >= 0 && context.chat[messageIndex].is_user) {
             messageIndex--;
@@ -35,27 +39,30 @@ export async function deliverRoleplayImage(cleanImageUrl, description) {
         if (messageIndex < 0) messageIndex = context.chat.length - 1;
 
         const targetMsg = context.chat[messageIndex];
+
+        // Clean out any leftover {image} or {scene} tags
+        targetMsg.mes = cleanTriggerTags(targetMsg.mes);
+
         const imageMarkdown = `\n\n![${descText}](${cleanImageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`;
 
         if (!targetMsg.mes.includes(cleanImageUrl)) {
-            // 1. Update text
             targetMsg.mes += imageMarkdown;
 
-            // 2. Synchronize with swipes array so SillyTavern reload preserves the image
             if (Array.isArray(targetMsg.swipes) && targetMsg.swipes.length > 0) {
                 const swipeIdx = targetMsg.swipe_id ?? (targetMsg.swipes.length - 1);
-                if (targetMsg.swipes[swipeIdx] && !targetMsg.swipes[swipeIdx].includes(cleanImageUrl)) {
-                    targetMsg.swipes[swipeIdx] += imageMarkdown;
+                if (targetMsg.swipes[swipeIdx]) {
+                    targetMsg.swipes[swipeIdx] = cleanTriggerTags(targetMsg.swipes[swipeIdx]);
+                    if (!targetMsg.swipes[swipeIdx].includes(cleanImageUrl)) {
+                        targetMsg.swipes[swipeIdx] += imageMarkdown;
+                    }
                 }
             }
 
-            // 3. Save to disk and update UI
             if (typeof context.updateMessage === 'function') {
                 context.updateMessage(messageIndex, targetMsg);
             }
             await persistChat();
 
-            // 4. Fallback DOM render
             const $targetMes = $(`#chat .mes[mesid="${messageIndex}"] .mes_text`).last();
             if ($targetMes.length && !$targetMes.find(`img[src="${cleanImageUrl}"]`).length) {
                 $targetMes.append(`

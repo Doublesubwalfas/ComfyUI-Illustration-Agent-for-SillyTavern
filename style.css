@@ -35,6 +35,52 @@
     gap: 8px;
 }
 
+/* Preset Controls */
+.ia-preset-bar {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.ia-preset-bar select {
+    flex: 1;
+}
+
+/* Macro Badges */
+.ia-macro-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+    padding: 6px;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 6px;
+}
+
+.ia-badge {
+    font-size: 0.72em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: monospace;
+    user-select: none;
+}
+
+.ia-badge.active {
+    background: rgba(46, 204, 113, 0.15);
+    border: 1px solid #2ecc71;
+    color: #2ecc71;
+}
+
+.ia-badge.inactive {
+    background: rgba(231, 76, 60, 0.15);
+    border: 1px solid #e74c3c;
+    color: #e74c3c;
+}
+
 /* Floating Android Chat-Head Bubble */
 #ia_gallery_bubble {
     position: fixed;
@@ -318,7 +364,7 @@
     display: block;
 }
 
-/* Mobile Responsive */
+/* Mobile Responsive (< 768px) */
 @media (max-width: 768px) {
     #ia_gallery_modal, #ia_batch_picker_modal {
         width: 100vw !important;

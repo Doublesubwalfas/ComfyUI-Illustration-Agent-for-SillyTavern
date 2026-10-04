@@ -1,6 +1,7 @@
 export const MODULE_NAME = 'comfyui-illustration-agent';
 
-export const defaultUnifiedSystemPrompt = `You are the autonomous Marinara Illustration Agent for a roleplay novel.
+// MODE 1: Full Autonomous Marinara Engine Schema
+export const schemaMode1 = `You are the autonomous Marinara Illustration Agent for a roleplay novel.
 Analyze the latest assistant turn (<assistant_response>) anchored to recent chat continuity.
 
 Execute these steps strictly:
@@ -19,7 +20,7 @@ Execute these steps strictly:
 
 ### STEP 3: NARRATIVE DESCRIPTION
 - "description": Write an accurate, concise 1-2 sentence description in plain natural English of what is visually depicted.
-  - Ground it strictly in the character's card traits, outfit, pose, expression, and environment. Do not hallucinate missing features.
+  - Ground it strictly in the character's card traits, outfit, pose, expression, and environment. Do not invent missing traits.
   - For selfies/photos, state explicitly: "A selfie taken by [Char] smiling in [Location] wearing [Outfit]..."
   - This narrative text will be perceived by the LLM in future turns so it remembers the visual moment.
 
@@ -40,10 +41,128 @@ Respond ONLY with valid JSON in this exact schema:
   "characters": ["visible character names"]
 }`;
 
+// MODE 2: Trigger Word / Camera-Device Schema ({image} & {scene})
+export const schemaMode2 = `You are the Scene Illustration Agent for a roleplay novel.
+Analyze the latest assistant turn (<assistant_response>).
+
+Trigger Rule:
+- If <assistant_response> contains "{image}": A character took a photo or selfie with a camera/phone/device. Write a vivid "description" of the photo and high-quality image prompt tags.
+- If <assistant_response> contains "{scene}": A dramatic physical action or moment occurred without a camera. Set "description" to an empty string and output the image prompt tags only (no background change).
+
+Respond ONLY with valid JSON in this exact schema:
+{
+  "decision": "yes",
+  "type": "image" | "scene",
+  "description": "grounded 1-2 sentence description if {image} was triggered, or empty string if {scene}",
+  "prompt": "detailed image generation tags describing subject, pose, clothes, expression, lighting",
+  "negativePrompt": "negative prompt tags",
+  "aspectRatio": "portrait" | "landscape" | "square",
+  "characters": ["visible character names"]
+}`;
+
+// MODE 3: Direct Forced Prompt Generator (Bypasses Decision)
+export const schemaMode3 = `You are the Direct Illustration Generator for a roleplay novel.
+Based on the latest assistant turn (<assistant_response>), draft an immediate high-quality illustration prompt.
+
+Respond ONLY with valid JSON in this exact schema:
+{
+  "decision": "yes",
+  "description": "1-2 sentence visual description of the current moment",
+  "prompt": "detailed image generation tags describing subject, pose, clothes, expression, lighting",
+  "negativePrompt": "negative prompt tags to avoid",
+  "aspectRatio": "portrait" | "landscape" | "square",
+  "characters": ["visible character names"]
+}`;
+
+// Default MultiGPU GGUF Workflow with %model%, %clip%, %vae%
+export const defaultComfyWorkflowJson = `{
+  "10": {
+    "inputs": {
+      "text": "%prompt%",
+      "clip": ["128", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "CLIP Text Encode (Prompt)" }
+  },
+  "11": {
+    "inputs": {
+      "text": "%negative_prompt%",
+      "clip": ["128", 0]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": { "title": "CLIP Text Encode (Prompt)" }
+  },
+  "12": {
+    "inputs": {
+      "seed": "%seed%",
+      "steps": "%steps%",
+      "cfg": "%cfg%",
+      "sampler_name": "%sampler%",
+      "scheduler": "%scheduler%",
+      "denoise": "%denoise%",
+      "model": ["129", 0],
+      "positive": ["10", 0],
+      "negative": ["11", 0],
+      "latent_image": ["113", 0]
+    },
+    "class_type": "KSampler",
+    "_meta": { "title": "KSampler" }
+  },
+  "14": {
+    "inputs": {
+      "samples": ["12", 0],
+      "vae": ["137", 0]
+    },
+    "class_type": "VAEDecode",
+    "_meta": { "title": "VAE Decode" }
+  },
+  "15": {
+    "inputs": {
+      "filename_prefix": "ComfyInject",
+      "images": ["14", 0]
+    },
+    "class_type": "SaveImage",
+    "_meta": { "title": "Save Image" }
+  },
+  "113": {
+    "inputs": {
+      "width": "%width%",
+      "height": "%height%",
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": { "title": "Empty Latent Image" }
+  },
+  "128": {
+    "inputs": {
+      "clip_name": "%clip%",
+      "type": "stable_diffusion",
+      "device": "cuda:1"
+    },
+    "class_type": "CLIPLoaderGGUFMultiGPU",
+    "_meta": { "title": "CLIPLoaderGGUFMultiGPU" }
+  },
+  "129": {
+    "inputs": {
+      "ckpt_name": "%model%",
+      "device": "cuda:0"
+    },
+    "class_type": "CheckpointLoaderSimpleMultiGPU",
+    "_meta": { "title": "CheckpointLoaderSimpleMultiGPU" }
+  },
+  "137": {
+    "inputs": {
+      "vae_name": "%vae%"
+    },
+    "class_type": "VAELoader",
+    "_meta": { "title": "Load VAE" }
+  }
+}`;
+
 export const defaultSettings = {
     enabled: true,
-    deliveryMode: 'attached', // 'attached' (inside message) or 'separate' (/comment card)
-    triggerMode: 'every',
+    agentMode: 'mode1', // 'mode1' (Full Autonomous), 'mode2' (Trigger Tags {image}/{scene}), 'mode3' (Forced Interval)
+    deliveryMode: 'attached',
     triggerInterval: 3,
     pipelinePhase: 'post',
     interactiveReview: false,
@@ -51,7 +170,6 @@ export const defaultSettings = {
     lookback: 3,
     stylePrefix: 'semi-realistic anime style, 2.5D anime, 3D anime, masterpiece, best quality, cinematic lighting',
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, blurry, jpeg artifacts',
-    unifiedPrompt: defaultUnifiedSystemPrompt,
 
     // Resolutions
     resPortraitW: 832,
@@ -68,6 +186,26 @@ export const defaultSettings = {
     comfyCfg: 4.5,
     comfySampler: 'euler_ancestral',
     comfyScheduler: 'normal',
+    comfyModel: 'anima-turbo-v1.1.safetensors',
+    comfyClip: 'Qwen3-0.6B-heretic-abliterated-uncensored.i1-Q6_K.gguf',
+    comfyVae: 'qwen_image_vae.safetensors',
+
+    // Active Schemas & Workflows
+    activeSchemaText: schemaMode1,
+    activeWorkflowText: defaultComfyWorkflowJson,
+
+    // Preset Collections
+    schemaPresets: {
+        'Mode 1: Full Autonomous (Marinara)': schemaMode1,
+        'Mode 2: Tag Triggered ({image} & {scene})': schemaMode2,
+        'Mode 3: Direct Prompt Generator': schemaMode3
+    },
+    selectedSchemaPreset: 'Mode 1: Full Autonomous (Marinara)',
+
+    workflowPresets: {
+        'Default MultiGPU GGUF (Anima + Qwen)': defaultComfyWorkflowJson
+    },
+    selectedWorkflowPreset: 'Default MultiGPU GGUF (Anima + Qwen)',
 
     // LLM
     llmProvider: 'current',
@@ -77,8 +215,7 @@ export const defaultSettings = {
 
     // Backend
     imageBackend: 'comfyui_direct',
-    comfyUrl: 'http://127.0.0.1:8188',
-    comfyWorkflow: ''
+    comfyUrl: 'http://127.0.0.1:8188'
 };
 
 export function getSettings() {
