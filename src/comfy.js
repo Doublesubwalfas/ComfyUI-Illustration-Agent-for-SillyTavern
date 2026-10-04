@@ -36,25 +36,6 @@ async function uploadToSillyTavernServer(imgBlob, filename) {
     return null;
 }
 
-async function uploadBackgroundToSillyTavernServer(imgBlob, filename) {
-    try {
-        const formData = new FormData();
-        formData.append('avatar', imgBlob, filename); 
-
-        const resp = await fetch('/api/backgrounds/upload', {
-            method: 'POST',
-            body: formData
-        });
-
-        if (resp.ok) {
-            return filename;
-        }
-    } catch (e) {
-        console.warn('[Illustration Agent] Background API upload fallback', e);
-    }
-    return null;
-}
-
 async function convertBlobToBase64(blob) {
     return new Promise((resolve) => {
         const reader = new FileReader();
@@ -153,17 +134,11 @@ export async function generateComfyImage(positive, negative, width, height, meta
     const imgResp = await fetch(comfyDirectUrl);
     const imgBlob = await imgResp.blob();
 
-    const isBg = metadata.isBackground;
-    const filename = `ia_${isBg ? 'bg' : 'img'}_${Date.now()}.png`;
+    const filename = `ia_img_${Date.now()}.png`;
     let finalCleanUrl = comfyDirectUrl;
 
-    if (isBg) {
-        const uploadedBgName = await uploadBackgroundToSillyTavernServer(imgBlob, filename);
-        if (uploadedBgName) finalCleanUrl = uploadedBgName;
-    } else {
-        const serverPath = await uploadToSillyTavernServer(imgBlob, filename);
-        if (serverPath) finalCleanUrl = serverPath;
-    }
+    const serverPath = await uploadToSillyTavernServer(imgBlob, filename);
+    if (serverPath) finalCleanUrl = serverPath;
 
     const base64Url = await convertBlobToBase64(imgBlob);
 
@@ -176,9 +151,7 @@ export async function generateComfyImage(positive, negative, width, height, meta
         positive,
         negative,
         aspectRatio: `${width}x${height}`,
-        type: isBg ? 'background' : 'illustration',
-        location: metadata.location || '',
-        reason: metadata.reason,
+        type: 'illustration',
         url: finalCleanUrl, 
         base64Backup: base64Url,
         favorite: false

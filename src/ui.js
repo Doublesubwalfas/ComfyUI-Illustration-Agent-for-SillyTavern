@@ -1,11 +1,15 @@
 import {
     getSettings,
     saveSettings,
-    getGalleryDb
+    getGalleryDb,
+    deleteGalleryRecords
 } from './config.js';
 import { getEffectiveComfyUrl } from './comfy.js';
 import { queryAgentLLM, runEvaluation } from './agent.js';
 import { deliverRoleplayImage, showImageToCharacter } from './chat.js';
+
+window._iaSelectionMode = false;
+window._iaSelectedIds = new Set();
 
 export function resetGeneratingIndicator() {
     $('#ia_gallery_bubble').removeClass('is-generating');
@@ -53,9 +57,7 @@ function updateMacroBadges() {
     const workflowText = $('#ia_comfy_workflow').val() || '';
 
     const schemaTokens = [
-        { name: 'decision', desc: 'Output JSON key for yes/no decision (Mode 1 only)' },
-        { name: 'background', desc: 'Output JSON key for background config (Mode 1 only)' },
-        { name: 'roleplay', desc: 'Output JSON key for roleplay config (Mode 1 only)' },
+        { name: 'decision', desc: 'Output JSON key for yes/no decision' },
         { name: 'description', desc: 'Output JSON key for narrative vision memory' },
         { name: 'prompt', desc: 'Output JSON key for image generation prompt' },
         { name: 'negativePrompt', desc: 'Output JSON key for negative prompt tags' },
@@ -200,13 +202,6 @@ export function setupUI() {
                             <div style="display: flex; gap: 4px;">
                                 <input type="number" id="ia_res_sq_w" class="text_pole" placeholder="1024">
                                 <input type="number" id="ia_res_sq_h" class="text_pole" placeholder="1024">
-                            </div>
-                        </div>
-                        <div>
-                            <label><small>Background Widescreen</small></label>
-                            <div style="display: flex; gap: 4px;">
-                                <input type="number" id="ia_res_bg_w" class="text_pole" placeholder="1344">
-                                <input type="number" id="ia_res_bg_h" class="text_pole" placeholder="768">
                             </div>
                         </div>
                     </div>
@@ -369,10 +364,8 @@ export function setupUI() {
             <div class="ia-gallery-header">
                 <b><i class="fa-solid fa-images" style="color: #ff7675; margin-right: 6px;"></i>Illustration Gallery</b>
                 <div class="ia-gallery-controls">
-                    <label class="checkbox_label" style="font-size: 0.85em; margin-right: 6px;">
-                        <input type="checkbox" id="ia_gallery_flat_toggle">
-                        <span>Flat View</span>
-                    </label>
+                    <button type="button" id="ia_win_select_btn" class="ia-win-btn" title="Select Images"><i class="fa-solid fa-check-square"></i> Select</button>
+                    <button type="button" id="ia_win_delete_btn" class="ia-win-btn" style="display:none; color:#e74c3c;" title="Delete Selected"><i class="fa-solid fa-trash"></i> Delete Selected</button>
                     <button type="button" id="ia_win_min_btn" class="ia-win-btn" title="Minimize to Bubble"><i class="fa-solid fa-minus"></i></button>
                     <button type="button" id="ia_win_close_btn" class="ia-win-btn" title="Close"><i class="fa-solid fa-xmark"></i></button>
                 </div>
@@ -412,7 +405,7 @@ export function setupUI() {
 function updateModeHint(mode) {
     const s = getSettings();
     const hints = {
-        mode1: 'Evaluates recent turns automatically. Generates background OR actions based on context.',
+        mode1: 'Evaluates recent turns automatically. Generates roleplay action based on context.',
         mode2: 'Trigger-word driven: fires ONLY if <image> or <scene> XML tags are present in the response.',
         mode3: 'Bypasses the thinking step: unconditionally generates image prompts every X assistant messages.'
     };
@@ -477,8 +470,6 @@ function bindSettingsEvents() {
     $('#ia_res_land_h').val(s.resLandscapeH).on('change', function () { s.resLandscapeH = parseInt($(this).val()) || 832; saveSettings(); });
     $('#ia_res_sq_w').val(s.resSquareW).on('change', function () { s.resSquareW = parseInt($(this).val()) || 1024; saveSettings(); });
     $('#ia_res_sq_h').val(s.resSquareH).on('change', function () { s.resSquareH = parseInt($(this).val()) || 1024; saveSettings(); });
-    $('#ia_res_bg_w').val(s.resBgW).on('change', function () { s.resBgW = parseInt($(this).val()) || 1344; saveSettings(); });
-    $('#ia_res_bg_h').val(s.resBgH).on('change', function () { s.resBgH = parseInt($(this).val()) || 768; saveSettings(); });
 
     $('#ia_comfy_model').val(s.comfyModel).on('input', function () { s.comfyModel = $(this).val(); saveSettings(); });
     $('#ia_comfy_clip').val(s.comfyClip).on('input', function () { s.comfyClip = $(this).val(); saveSettings(); });
@@ -543,6 +534,34 @@ function bindSettingsEvents() {
     $('#ia_wf_preset_save_btn').on('click', () => saveCurrentWorkflowPreset());
     $('#ia_wf_preset_add_btn').on('click', () => addNewWorkflowPreset());
     $('#ia_wf_preset_del_btn').on('click', () => deleteCurrentWorkflowPreset());
+
+    // Selection Handlers
+    $('#ia_win_select_btn').on('click', function() {
+        window._iaSelectionMode = !window._iaSelectionMode;
+        if (window._iaSelectionMode) {
+            $(this).html('<i class="fa-solid fa-xmark"></i> Cancel Select');
+            $('#ia_win_delete_btn').show();
+        } else {
+            $(this).html('<i class="fa-solid fa-check-square"></i> Select');
+            $('#ia_win_delete_btn').hide();
+            window._iaSelectedIds.clear();
+            renderGalleryContent(window._iaLastFilterChar, window._iaLastFilterType);
+        }
+    });
+
+    $('#ia_win_delete_btn').on('click', function() {
+        if (window._iaSelectedIds.size === 0) return;
+        if (confirm(`Delete ${window._iaSelectedIds.size} selected image(s)?`)) {
+            const idsToDelete = Array.from(window._iaSelectedIds);
+            deleteGalleryRecords(idsToDelete);
+            window._iaSelectedIds.clear();
+            window._iaSelectionMode = false;
+            $('#ia_win_select_btn').html('<i class="fa-solid fa-check-square"></i> Select');
+            $(this).hide();
+            renderGalleryContent(window._iaLastFilterChar, window._iaLastFilterType);
+            toastr.success('Deleted selected images.', 'Doublesub');
+        }
+    });
 }
 
 function refreshPresetDropdowns() {
@@ -651,9 +670,24 @@ function setupAndroidBubble() {
 
 function openGallery() {
     $('#ia_gallery_bubble').fadeOut(150);
+    window._iaSelectionMode = false;
+    window._iaSelectedIds.clear();
+    $('#ia_win_select_btn').html('<i class="fa-solid fa-check-square"></i> Select');
+    $('#ia_win_delete_btn').hide();
+    
     renderGalleryNav();
     renderGalleryContent('all', null);
     $('#ia_gallery_modal').fadeIn(200);
+}
+
+function toggleSelection(id) {
+    if (window._iaSelectedIds.has(id)) {
+        window._iaSelectedIds.delete(id);
+        $(`.ia-card[data-id="${id}"]`).removeClass('ia-selected');
+    } else {
+        window._iaSelectedIds.add(id);
+        $(`.ia-card[data-id="${id}"]`).addClass('ia-selected');
+    }
 }
 
 function toggleFavorite(id) {
@@ -684,7 +718,7 @@ async function downloadImageLocal(url, filename) {
 }
 
 function openLightbox(record) {
-    const displayUrl = record.url && record.url.startsWith('ia_bg_') ? `/backgrounds/${record.url}` : (record.url || record.cleanUrl);
+    const displayUrl = record.url || record.cleanUrl;
     
     $('#ia_lightbox_img').attr('src', displayUrl);
     $('#ia_lightbox_title').text(record.character || 'Illustration');
@@ -698,7 +732,7 @@ function openLightbox(record) {
     });
 
     $('#ia_lb_dl_btn').off('click').on('click', () => {
-        const dName = record.type === 'background' ? `bg_${record.date}.png` : `illustration_${record.character}_${record.date}.png`;
+        const dName = `illustration_${record.character}_${record.date}.png`;
         downloadImageLocal(displayUrl, dName);
     });
 
@@ -723,9 +757,6 @@ function renderGalleryNav() {
         </div>
         <div class="ia-nav-filter" data-filter="favorites" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;">
             <i class="fa-solid fa-heart" style="color:#e74c3c;"></i> Favorites
-        </div>
-        <div class="ia-nav-filter" data-filter="background" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;">
-            <i class="fa-solid fa-mountain-sun"></i> Backgrounds
         </div>
     `);
 
@@ -755,7 +786,6 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     if (!isFlat) {
         if (filterChar && filterChar !== 'all') records = records.filter(r => r.character === filterChar);
         if (filterType && filterType !== 'all') {
-            if (filterType === 'background') records = records.filter(r => r.type === 'background');
             if (filterType === 'favorites') records = records.filter(r => r.favorite);
         }
     }
@@ -767,29 +797,25 @@ function renderGalleryContent(filterChar = null, filterType = null) {
 
     let htmlStr = '';
     records.forEach(r => {
-        const displayUrl = r.url && r.url.startsWith('ia_bg_') ? `/backgrounds/${r.url}` : (r.url || r.cleanUrl);
+        const displayUrl = r.url || r.cleanUrl;
         const imageMarkup = displayUrl ? `<img src="${displayUrl}" loading="lazy" class="ia-clickable-img" />` : `<div style="background: #111; height: 160px; display: flex; align-items: center; justify-content: center;"><i class="fa-solid fa-image"></i></div>`;
-        const tagBadge = r.type === 'background' ? `<span style="background: #e67e22; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.72em;">BG</span>` : `<span style="background: #3498db; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.72em;">Photo</span>`;
         const heartClass = r.favorite ? "fa-solid fa-heart" : "fa-regular fa-heart";
-        
-        const actionBtnHTML = r.type === 'background' 
-            ? `<button type="button" class="ia-card-btn ia-set-bg-btn"><i class="fa-solid fa-mountain-sun"></i> Set BG</button>`
-            : `<button type="button" class="ia-card-btn ia-insert-roleplay-btn"><i class="fa-solid fa-comment-medical"></i> Insert</button>`;
+        const selClass = window._iaSelectedIds.has(r.id) ? "ia-selected" : "";
 
         htmlStr += `
-            <div class="ia-card" data-id="${r.id}">
-                <div style="position:relative; width:100%;">
+            <div class="ia-card ${selClass}" data-id="${r.id}">
+                <div class="ia-card-sel-overlay"><i class="fa-solid fa-circle-check" style="color: #2ecc71; font-size: 3em; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);"></i></div>
+                <div style="position:relative; width:100%; display:flex;">
                     ${imageMarkup}
                     <div class="ia-card-fav-btn" title="Toggle Favorite"><i class="${heartClass}"></i></div>
                 </div>
                 <div class="ia-card-meta">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
                         <b style="font-size: 0.88em;">${r.character}</b>
-                        ${tagBadge}
                     </div>
-                    <div class="ia-desc-text" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${r.description || r.reason || 'No description'}</div>
+                    <div class="ia-desc-text" title="${(r.description || r.reason || '').replace(/"/g, '&quot;')}">${r.description || r.reason || 'No description'}</div>
                     <div class="ia-card-actions">
-                        ${actionBtnHTML}
+                        <button type="button" class="ia-card-btn ia-insert-roleplay-btn"><i class="fa-solid fa-comment-medical"></i> Insert</button>
                         <button type="button" class="ia-card-btn ia-expand-btn"><i class="fa-solid fa-expand"></i> View</button>
                     </div>
                 </div>
@@ -802,28 +828,26 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     $grid.off('click', '.ia-clickable-img, .ia-expand-btn').on('click', '.ia-clickable-img, .ia-expand-btn', function(e) {
         e.preventDefault(); e.stopPropagation();
         const id = $(this).closest('.ia-card').attr('data-id');
+        
+        if (window._iaSelectionMode) {
+            toggleSelection(id);
+            return;
+        }
+
         const record = getGalleryDb().find(r => r.id === id);
         if (record) openLightbox(record);
     });
 
     $grid.off('click', '.ia-card-fav-btn').on('click', '.ia-card-fav-btn', function(e) {
         e.preventDefault(); e.stopPropagation();
+        if (window._iaSelectionMode) return;
         const id = $(this).closest('.ia-card').attr('data-id');
         toggleFavorite(id);
     });
 
-    $grid.off('click', '.ia-set-bg-btn').on('click', '.ia-set-bg-btn', async function(e) {
-        e.preventDefault(); e.stopPropagation();
-        const id = $(this).closest('.ia-card').attr('data-id');
-        const r = getGalleryDb().find(x => x.id === id);
-        if (r && r.url) {
-            await SillyTavern.getContext().executeSlashCommands(`/bg ${r.url}`);
-            toastr.success(`Set wallpaper: ${r.location || 'Scene'}`, 'Doublesub');
-        }
-    });
-
     $grid.off('click', '.ia-insert-roleplay-btn').on('click', '.ia-insert-roleplay-btn', async function(e) {
         e.preventDefault(); e.stopPropagation();
+        if (window._iaSelectionMode) return;
         const id = $(this).closest('.ia-card').attr('data-id');
         const r = getGalleryDb().find(x => x.id === id);
         if (r) {

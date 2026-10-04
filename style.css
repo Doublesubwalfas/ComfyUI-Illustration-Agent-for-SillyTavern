@@ -35,7 +35,6 @@
     gap: 8px;
 }
 
-/* Preset Controls */
 .ia-preset-bar {
     display: flex;
     gap: 6px;
@@ -47,7 +46,6 @@
     flex: 1;
 }
 
-/* Macro Badges */
 .ia-macro-container {
     display: flex;
     flex-wrap: wrap;
@@ -220,12 +218,34 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    transition: transform 0.15s ease, border-color 0.15s ease;
+    transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+    position: relative;
+    min-height: min-content;
 }
 
 .ia-card:hover {
     transform: translateY(-2px);
     border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* Selection State */
+.ia-card.ia-selected {
+    border: 2px solid #2ecc71;
+    transform: scale(0.96);
+    box-shadow: 0 0 12px rgba(46, 204, 113, 0.4);
+}
+
+.ia-card-sel-overlay {
+    position: absolute; 
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(46, 204, 113, 0.15);
+    display: none;
+    z-index: 5;
+    pointer-events: none; /* Allows clicks to pass through to the image */
+}
+
+.ia-card.ia-selected .ia-card-sel-overlay {
+    display: block;
 }
 
 .ia-card img {
@@ -244,27 +264,35 @@
     flex: 1;
 }
 
+/* Fixed Squishing Description */
 .ia-desc-text {
     font-size: 0.82em;
     line-height: 1.25em;
     color: var(--SmartThemeBodyColor, #ddd);
     font-style: italic;
     background: rgba(0, 0, 0, 0.2);
-    padding: 4px 6px;
+    padding: 6px;
     border-radius: 4px;
     margin-top: 4px;
+    
+    /* Safely wrap to 2 lines without distorting layout */
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
 }
 
 .ia-card-actions {
     display: flex;
     gap: 4px;
-    margin-top: 6px;
+    margin-top: auto; /* Pushes buttons to the bottom cleanly */
 }
 
 .ia-card-btn {
     flex: 1;
     font-size: 0.72em;
-    padding: 4px 6px;
+    padding: 6px 6px;
     border-radius: 4px;
     background: rgba(255, 255, 255, 0.1);
     border: 1px solid rgba(255, 255, 255, 0.15);
@@ -277,7 +305,6 @@
     background: rgba(255, 255, 255, 0.2);
 }
 
-/* Favorite Quick Button on Gallery Cards */
 .ia-card-fav-btn {
     position: absolute;
     top: 6px;

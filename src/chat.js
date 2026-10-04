@@ -1,6 +1,5 @@
 import { getSettings } from './config.js';
 
-// Regex cleaner: extremely aggressive strip for <image> and <scene> XML tags, including wrapping markdown
 export function cleanTriggerTags(text) {
     if (!text || typeof text !== 'string') return text;
     return text.replace(/[*_]*<(image|scene)>[\s\S]*?<\/\1>[*_]*/gi, '').trim();
@@ -21,9 +20,8 @@ export async function persistChat() {
 
 export async function showImageToCharacter(cleanImageUrl, description) {
     const context = SillyTavern.getContext();
-    const displayUrl = cleanImageUrl.startsWith('ia_bg_') ? `/backgrounds/${cleanImageUrl}` : cleanImageUrl;
     const descText = description || 'An image';
-    const text = `[I show you a picture: *${descText}*]\n\n![Image](${displayUrl})`;
+    const text = `[I show you a picture: *${descText}*]\n\n![Image](${cleanImageUrl})`;
     
     await context.executeSlashCommands(`/send ${text}`);
     toastr.success('Image sent to character in chat.', 'Doublesub');

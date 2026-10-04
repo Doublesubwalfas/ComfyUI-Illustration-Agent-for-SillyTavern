@@ -8,31 +8,19 @@ Analyze the latest assistant turn (<assistant_response>) anchored to recent chat
 Set "decision" to "yes" ONLY IF:
 1. A direct photo/selfie action happens.
 2. A physical action, dynamic combat, intimacy, or character reveal occurs.
-3. The narrative transitions to a noticeably new location.
 Otherwise, set "decision" to "no" and stop.
 
 ### STEP 2: SCENE GENERATION
-You can generate a background, a roleplay illustration, or BOTH simultaneously.
-- "background.generate": true -> ONLY for new physical locations.
-- "roleplay.generate": true -> For character actions, selfies, intimate moments, portraits.
+If decision is "yes", write a prompt for the current scene/action.
 
 Respond ONLY with valid JSON in this exact schema:
 {
   "decision": "yes" | "no",
   "reason": "short explanation of your decision",
-  "background": {
-     "generate": true | false,
-     "location": "concise name of place",
-     "prompt": "detailed scenery tags, no humans",
-     "negativePrompt": "character, person, human"
-  },
-  "roleplay": {
-     "generate": true | false,
-     "description": "grounded 1-2 sentence scene description for LLM memory",
-     "prompt": "detailed image generation tags (1girl, etc)",
-     "negativePrompt": "negative tags (bad anatomy, etc)",
-     "aspectRatio": "portrait" | "landscape" | "square"
-  }
+  "description": "grounded 1-2 sentence scene description for LLM memory",
+  "prompt": "detailed image generation tags (1girl, etc)",
+  "negativePrompt": "negative tags (bad anatomy, etc)",
+  "aspectRatio": "portrait" | "landscape" | "square"
 }`;
 
 // MODE 2: Extracted XML-Tag Schema (<image> & <scene>)
@@ -156,10 +144,8 @@ export const defaultSettings = {
     stylePrefix: 'semi-realistic anime style, 2.5D anime, 3D anime, masterpiece, best quality, cinematic lighting',
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, blurry, jpeg artifacts',
 
-    // STRICT XML Injection Text for Mode 2
     mode2InjectionText: '[SYSTEM NOTE: To trigger an illustration, you MUST output a visual description enclosed EXACTLY in <image>...</image> tags (for photos) or <scene>...</scene> tags (for actions). Example: <image>A selfie of me smiling.</image> Do NOT add markdown or extra commentary around the tags.]',
 
-    // Isolated Prompts
     promptMode1: schemaMode1,
     promptMode2: schemaMode2,
     promptMode3: schemaMode3,
@@ -170,8 +156,6 @@ export const defaultSettings = {
     resLandscapeH: 832,
     resSquareW: 1024,
     resSquareH: 1024,
-    resBgW: 1344,
-    resBgH: 768,
 
     comfySteps: 20,
     comfyCfg: 4.5,
@@ -223,6 +207,14 @@ export function saveGalleryRecord(entry) {
     const s = getSettings();
     if (!Array.isArray(s.gallery)) s.gallery = [];
     s.gallery.unshift(entry);
+    saveSettings();
+    $('#ia_gallery_bubble_badge').text(s.gallery.length);
+}
+
+export function deleteGalleryRecords(idsToDelete) {
+    const s = getSettings();
+    if (!Array.isArray(s.gallery)) return;
+    s.gallery = s.gallery.filter(record => !idsToDelete.includes(record.id));
     saveSettings();
     $('#ia_gallery_bubble_badge').text(s.gallery.length);
 }
