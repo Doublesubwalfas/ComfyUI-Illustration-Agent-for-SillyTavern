@@ -73,13 +73,9 @@ export async function runEvaluation(force = false, tags = null) {
     const recentMessages = context.chat.slice(-lookbackCount);
     const lastMsg = recentMessages[recentMessages.length - 1];
 
-    const lastMsgTextRaw = lastMsg.mes || '';
-    const hasImageTag = tags ? tags.hasImage : /\{\s*image\s*\}/i.test(lastMsgTextRaw);
-    const hasSceneTag = tags ? tags.hasScene : /\{\s*scene\s*\}/i.test(lastMsgTextRaw);
-
     if (!force && s.agentMode === 'mode2') {
-        if (!hasImageTag && !hasSceneTag) {
-            console.log('[Illustration Agent] Mode 2: No {image} or {scene} tag found in assistant turn. Skipping.');
+        if (!tags || (!tags.extractedImageText && !tags.extractedSceneText)) {
+            console.log('[Illustration Agent] Mode 2: No <image> or <scene> XML tag found. Skipping.');
             return;
         }
     }
@@ -100,8 +96,14 @@ export async function runEvaluation(force = false, tags = null) {
 
         const activeChar = context.characters?.[context.characterId];
         const charDescription = activeChar?.data?.description || activeChar?.description || '';
-
         const activeSchema = s.activeSchemaText || '';
+
+        // Inject the extracted XML description into the prompt for Mode 2
+        let mode2Context = "";
+        if (s.agentMode === 'mode2' && tags) {
+            if (tags.extractedImageText) mode2Context += `\n[EXTRACTED <image> REQUEST]: ${tags.extractedImageText}\n`;
+            if (tags.extractedSceneText) mode2Context += `\n[EXTRACTED <scene> REQUEST]: ${tags.extractedSceneText}\n`;
+        }
 
         const fullPrompt = `${activeSchema}
 
@@ -111,7 +113,7 @@ Description: ${charDescription.substring(0, 500)}
 
 Recent Isolated Context:
 ${contextText}
-
+${mode2Context}
 <assistant_response>
 ${cleanTriggerTags(lastMsg.mes)}
 </assistant_response>`;
@@ -140,17 +142,12 @@ ${cleanTriggerTags(lastMsg.mes)}
             return;
         }
 
-        // Support array of illustrations (Mode 1 multi-queue) or fallback to single object (Legacy/Mode 2/3)
         let items = Array.isArray(result.illustrations) ? result.illustrations : [result];
 
         items.forEach(item => {
             let isBg = (item.type === 'background' || item.target === 'background');
             
-            if (s.agentMode === 'mode2') {
-                isBg = false;
-                if (hasSceneTag) item.description = '';
-            }
-            if (s.agentMode === 'mode3') {
+            if (s.agentMode === 'mode2' || s.agentMode === 'mode3') {
                 isBg = false;
             }
 

@@ -40,13 +40,10 @@ Respond ONLY with valid JSON in this exact schema:
   ]
 }`;
 
-// MODE 2: Trigger Word / Camera-Device Schema ({image} & {scene})
+// MODE 2: Extracted XML-Tag Schema (<image> & <scene>)
 export const schemaMode2 = `You are the Scene Illustration Agent for a roleplay novel.
-Analyze the latest assistant turn (<assistant_response>).
-
-Trigger Rule:
-- If <assistant_response> contains "{image}": A character took a photo or selfie with a camera/phone/device. Write a vivid "description" of the photo and high-quality image prompt tags.
-- If <assistant_response> contains "{scene}": A dramatic physical action or moment occurred without a camera. Set "description" to an empty string and output the image prompt tags only.
+You have been provided with an extracted visual description requested by the character.
+Your job is to convert their natural language description into high-quality image generation tags.
 
 Respond ONLY with valid JSON in this exact schema:
 {
@@ -54,8 +51,8 @@ Respond ONLY with valid JSON in this exact schema:
   "illustrations": [
     {
       "type": "roleplay",
-      "description": "grounded 1-2 sentence description if {image} was triggered, or empty string if {scene}",
-      "prompt": "detailed image generation tags describing subject, pose, clothes, expression",
+      "description": "Cleaned up 1-2 sentence description based on the extracted request",
+      "prompt": "detailed image generation tags (1girl, solo, etc) translating the request",
       "negativePrompt": "negative prompt tags",
       "aspectRatio": "portrait" | "landscape" | "square"
     }
@@ -177,7 +174,7 @@ export const defaultSettings = {
     stylePrefix: 'semi-realistic anime style, 2.5D anime, 3D anime, masterpiece, best quality, cinematic lighting',
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, blurry, jpeg artifacts',
 
-    mode2InjectionText: 'System Note: When you take a photo, selfie, or use a device to capture a picture, include the exact text {image} anywhere in your response. When a major physical action, combat, or dramatic visual scene change occurs, include the exact text {scene} in your response.',
+    mode2InjectionText: 'System Note: To trigger an illustration, output a visual description enclosed in <image>...</image> tags (for selfies/photos) or <scene>...</scene> tags (for actions). Example: <image>A selfie of me smiling at the beach wearing a hat.</image>',
 
     resPortraitW: 832,
     resPortraitH: 1216,
@@ -201,7 +198,7 @@ export const defaultSettings = {
 
     schemaPresets: {
         'Mode 1: Full Autonomous (Doublesub)': schemaMode1,
-        'Mode 2: Tag Triggered ({image} & {scene})': schemaMode2,
+        'Mode 2: Tag Triggered (<image> & <scene>)': schemaMode2,
         'Mode 3: Direct Prompt Generator': schemaMode3
     },
     selectedSchemaPreset: 'Mode 1: Full Autonomous (Doublesub)',

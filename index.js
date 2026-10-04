@@ -4,6 +4,7 @@ import { attachInChatMessageButtons, cleanTriggerTags } from './src/chat.js';
 import { getSettings } from './src/config.js';
 
 let lastHandledMessageId = null;
+const EXTENSION_START_TIME = Date.now();
 
 jQuery(async () => {
     setupUI();
@@ -12,8 +13,7 @@ jQuery(async () => {
     const eventSource = context.eventSource || SillyTavern.eventSource;
     const events = context.event_types || context.eventTypes || SillyTavern.event_types || SillyTavern.eventTypes || {};
 
-    // 1. UI CLEANUP: Removes {image}/{scene} tags from the screen and adds Reroll buttons.
-    // Safe to run every time a message is rendered (like when loading a chat).
+    // 1. UI CLEANUP: Removes <image> and <scene> tags from the screen and adds Reroll buttons.
     function handleUIRender(msgId) {
         if (context.chat && msgId !== undefined && context.chat[msgId]) {
             const currentMsg = context.chat[msgId];
@@ -34,8 +34,14 @@ jQuery(async () => {
         attachInChatMessageButtons(runEvaluation);
     }
 
-    // 2. EVALUATION TRIGGER: This only fires when the AI finishes a live generation.
+    // 2. EVALUATION TRIGGER: Only fires when AI completes live generation
     function handleAssistantTurnFinished(msgId) {
+        // Block execution if this event fired during chat load / initialization
+        if (Date.now() - EXTENSION_START_TIME < 3000) {
+            console.log('[Illustration Agent] Ignored event during initialization phase.');
+            return;
+        }
+
         const s = getSettings();
         if (!s || !s.enabled) return; // Master switch
 
@@ -44,14 +50,17 @@ jQuery(async () => {
         }
         lastHandledMessageId = msgId;
 
-        let hasImage = false;
-        let hasScene = false;
+        let extractedImageText = null;
+        let extractedSceneText = null;
 
         if (context.chat && msgId !== undefined && context.chat[msgId]) {
             const currentMsg = context.chat[msgId];
             if (!currentMsg.is_user && currentMsg.mes) {
-                hasImage = /\{\s*image\s*\}/i.test(currentMsg.mes);
-                hasScene = /\{\s*scene\s*\}/i.test(currentMsg.mes);
+                const imageMatch = /<image>([\s\S]*?)<\/image>/i.exec(currentMsg.mes);
+                const sceneMatch = /<scene>([\s\S]*?)<\/scene>/i.exec(currentMsg.mes);
+                
+                if (imageMatch) extractedImageText = imageMatch[1].trim();
+                if (sceneMatch) extractedSceneText = sceneMatch[1].trim();
             }
         }
 
@@ -60,7 +69,7 @@ jQuery(async () => {
 
         const phase = s.pipelinePhase || 'post';
         if (phase === 'post' || phase === 'parallel') {
-            runEvaluation(false, { hasImage, hasScene });
+            runEvaluation(false, { extractedImageText, extractedSceneText });
         }
     }
 

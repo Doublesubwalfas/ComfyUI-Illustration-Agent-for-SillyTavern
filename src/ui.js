@@ -139,7 +139,7 @@ export function setupUI() {
                         <label for="ia_agent_mode"><b>Agent Operation Mode:</b></label>
                         <select id="ia_agent_mode" class="text_pole">
                             <option value="mode1">Mode 1: Autonomous Evaluator (Analyzes scene/actions automatically)</option>
-                            <option value="mode2">Mode 2: Tag-Triggered Only ({image} / {scene})</option>
+                            <option value="mode2">Mode 2: XML Tag-Triggered Only (&lt;image&gt; / &lt;scene&gt;)</option>
                             <option value="mode3">Mode 3: Interval-Forced (Triggers every X messages blindly)</option>
                         </select>
                         <small id="ia_mode_hint" style="opacity: 0.7; margin-top: 2px;"></small>
@@ -148,7 +148,7 @@ export function setupUI() {
                     <div class="ia-row" id="ia_mode2_instructions" style="display: none; margin-top: 8px; border-left: 2px solid #2ecc71; padding-left: 8px;">
                         <label><b>Mode 2 System Prompt Injection (Editable):</b></label>
                         <small style="opacity: 0.8; display: block; margin-bottom: 4px;">Copy this instruction into your character's System Prompt, Scenario, or Author's Note.</small>
-                        <textarea id="ia_mode2_injection" class="text_pole" rows="4" style="font-size: 0.85em; font-family: monospace;"></textarea>
+                        <textarea id="ia_mode2_injection" class="text_pole" rows="5" style="font-size: 0.85em; font-family: monospace;"></textarea>
                     </div>
 
                     <div class="ia-row">
@@ -428,7 +428,7 @@ export function setupUI() {
 function updateModeHint(mode) {
     const hints = {
         mode1: 'Evaluates recent turns for photo actions, physical shifts, and background transitions. Can output multiple images simultaneously.',
-        mode2: 'Trigger-word driven: fires ONLY if {image} (selfies/devices) or {scene} (action without background) are present.',
+        mode2: 'Trigger-word driven: fires ONLY if <image> (selfies/devices) or <scene> (action) XML tags are present.',
         mode3: 'Bypasses the thinking step: unconditionally generates image prompts every X assistant messages.'
     };
     $('#ia_mode_hint').text(hints[mode] || '');
@@ -453,8 +453,8 @@ function bindSettingsEvents() {
         updateModeHint(s.agentMode);
         if (s.agentMode === 'mode1' && s.schemaPresets['Mode 1: Full Autonomous (Doublesub)']) {
             switchSchemaPreset('Mode 1: Full Autonomous (Doublesub)');
-        } else if (s.agentMode === 'mode2' && s.schemaPresets['Mode 2: Tag Triggered ({image} & {scene})']) {
-            switchSchemaPreset('Mode 2: Tag Triggered ({image} & {scene})');
+        } else if (s.agentMode === 'mode2' && s.schemaPresets['Mode 2: Tag Triggered (<image> & <scene>)']) {
+            switchSchemaPreset('Mode 2: Tag Triggered (<image> & <scene>)');
         } else if (s.agentMode === 'mode3' && s.schemaPresets['Mode 3: Direct Prompt Generator']) {
             switchSchemaPreset('Mode 3: Direct Prompt Generator');
         }
@@ -512,7 +512,7 @@ function bindSettingsEvents() {
     $('#ia_close_review, #ia_rev_cancel').on('click', () => $('#ia_review_modal').fadeOut(150));
     $('#ia_close_batch_picker').on('click', () => $('#ia_batch_picker_modal').fadeOut(150));
     $('#ia_close_lightbox').on('click', () => $('#ia_lightbox_modal').fadeOut(150));
-    $('#ia_gallery_flat_toggle').on('change', () => renderGalleryContent());
+    $('#ia_gallery_flat_toggle').on('change', () => renderGalleryContent(window._iaLastFilterChar, window._iaLastFilterType));
 
     // Diagnostic Handlers
     $('#ia_ping_llm_btn').on('click', async () => {
@@ -720,7 +720,7 @@ function setupAndroidBubble() {
 function openGallery() {
     $('#ia_gallery_bubble').fadeOut(150);
     renderGalleryNav();
-    renderGalleryContent();
+    renderGalleryContent('all', null); // Default to all media
     $('#ia_gallery_modal').fadeIn(200);
 }
 
@@ -821,9 +821,11 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     let records = [...getGalleryDb()];
 
     if (!isFlat) {
-        if (filterChar) records = records.filter(r => r.character === filterChar);
-        if (filterType === 'background') records = records.filter(r => r.type === 'background');
-        if (filterType === 'favorites') records = records.filter(r => r.favorite);
+        if (filterChar && filterChar !== 'all') records = records.filter(r => r.character === filterChar);
+        if (filterType && filterType !== 'all') {
+            if (filterType === 'background') records = records.filter(r => r.type === 'background');
+            if (filterType === 'favorites') records = records.filter(r => r.favorite);
+        }
     }
 
     if (records.length === 0) {
@@ -831,14 +833,20 @@ function renderGalleryContent(filterChar = null, filterType = null) {
         return;
     }
 
+    // Build massive string for fast injection & guaranteed DOM integrity
+    let htmlStr = '';
     records.forEach(r => {
         const displayUrl = r.url && r.url.startsWith('ia_bg_') ? `/backgrounds/${r.url}` : (r.url || r.cleanUrl);
         const imageMarkup = displayUrl ? `<img src="${displayUrl}" loading="lazy" class="ia-clickable-img" />` : `<div style="background: #111; height: 160px; display: flex; align-items: center; justify-content: center;"><i class="fa-solid fa-image"></i></div>`;
         const tagBadge = r.type === 'background' ? `<span style="background: #e67e22; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.72em;">BG</span>` : `<span style="background: #3498db; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.72em;">Photo</span>`;
         const heartClass = r.favorite ? "fa-solid fa-heart" : "fa-regular fa-heart";
+        
+        const actionBtnHTML = r.type === 'background' 
+            ? `<button type="button" class="ia-card-btn ia-set-bg-btn"><i class="fa-solid fa-mountain-sun"></i> Set BG</button>`
+            : `<button type="button" class="ia-card-btn ia-insert-roleplay-btn"><i class="fa-solid fa-comment-medical"></i> Insert</button>`;
 
-        const $card = $(`
-            <div class="ia-card">
+        htmlStr += `
+            <div class="ia-card" data-id="${r.id}">
                 <div style="position:relative; width:100%;">
                     ${imageMarkup}
                     <div class="ia-card-fav-btn" title="Toggle Favorite"><i class="${heartClass}"></i></div>
@@ -850,37 +858,48 @@ function renderGalleryContent(filterChar = null, filterType = null) {
                     </div>
                     <div class="ia-desc-text" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${r.description || r.reason || 'No description'}</div>
                     <div class="ia-card-actions">
-                        ${r.type === 'background'
-                            ? `<button type="button" class="ia-card-btn ia-set-bg-btn"><i class="fa-solid fa-mountain-sun"></i> Set BG</button>`
-                            : `<button type="button" class="ia-card-btn ia-insert-roleplay-btn"><i class="fa-solid fa-comment-medical"></i> Insert</button>`}
+                        ${actionBtnHTML}
                         <button type="button" class="ia-card-btn ia-expand-btn"><i class="fa-solid fa-expand"></i> View</button>
                     </div>
                 </div>
             </div>
-        `);
+        `;
+    });
+    
+    $grid.append(htmlStr);
 
-        $card.find('.ia-clickable-img, .ia-expand-btn').on('click', () => openLightbox(r));
-        
-        $card.find('.ia-card-fav-btn').on('click', (e) => {
-            e.stopPropagation();
-            toggleFavorite(r.id);
-        });
+    // Event Delegation (Fixes all mobile tapping bugs and missing clicks)
+    $grid.off('click', '.ia-clickable-img, .ia-expand-btn').on('click', '.ia-clickable-img, .ia-expand-btn', function(e) {
+        e.preventDefault(); e.stopPropagation();
+        const id = $(this).closest('.ia-card').attr('data-id');
+        const record = getGalleryDb().find(r => r.id === id);
+        if (record) openLightbox(record);
+    });
 
-        $card.find('.ia-set-bg-btn').on('click', async (e) => {
-            e.stopPropagation();
-            if (r.url) {
-                await SillyTavern.getContext().executeSlashCommands(`/bg ${r.url}`);
-                toastr.success(`Set wallpaper: ${r.location || 'Scene'}`, 'Doublesub');
-            }
-        });
+    $grid.off('click', '.ia-card-fav-btn').on('click', '.ia-card-fav-btn', function(e) {
+        e.preventDefault(); e.stopPropagation();
+        const id = $(this).closest('.ia-card').attr('data-id');
+        toggleFavorite(id);
+    });
 
-        $card.find('.ia-insert-roleplay-btn').on('click', async (e) => {
-            e.stopPropagation();
+    $grid.off('click', '.ia-set-bg-btn').on('click', '.ia-set-bg-btn', async function(e) {
+        e.preventDefault(); e.stopPropagation();
+        const id = $(this).closest('.ia-card').attr('data-id');
+        const r = getGalleryDb().find(x => x.id === id);
+        if (r && r.url) {
+            await SillyTavern.getContext().executeSlashCommands(`/bg ${r.url}`);
+            toastr.success(`Set wallpaper: ${r.location || 'Scene'}`, 'Doublesub');
+        }
+    });
+
+    $grid.off('click', '.ia-insert-roleplay-btn').on('click', '.ia-insert-roleplay-btn', async function(e) {
+        e.preventDefault(); e.stopPropagation();
+        const id = $(this).closest('.ia-card').attr('data-id');
+        const r = getGalleryDb().find(x => x.id === id);
+        if (r) {
             await deliverRoleplayImage(r.url, r.description);
             $('#ia_gallery_modal').fadeOut(150);
             $('#ia_gallery_bubble').fadeIn(200);
-        });
-
-        $grid.append($card);
+        }
     });
 }

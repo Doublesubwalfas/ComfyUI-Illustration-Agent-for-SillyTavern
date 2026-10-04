@@ -1,9 +1,9 @@
 import { getSettings } from './config.js';
 
-// Regex cleaner: strips {image} and {scene} tags from chat text and memory
+// Regex cleaner: strips <image> and <scene> XML tags and their content from chat text
 export function cleanTriggerTags(text) {
     if (!text || typeof text !== 'string') return text;
-    return text.replace(/\{\s*(image|scene)\s*\}/gi, '').trim();
+    return text.replace(/<(image|scene)>[\s\S]*?<\/\1>/gi, '').trim();
 }
 
 export async function persistChat() {
@@ -22,7 +22,6 @@ export async function persistChat() {
 // Shows an image into the roleplay context as an active interaction from the User
 export async function showImageToCharacter(cleanImageUrl, description) {
     const context = SillyTavern.getContext();
-    // Resolve pure filenames to background path if needed
     const displayUrl = cleanImageUrl.startsWith('ia_bg_') ? `/backgrounds/${cleanImageUrl}` : cleanImageUrl;
     const descText = description || 'An image';
     const text = `[I show you a picture: *${descText}*]\n\n![Image](${displayUrl})`;
@@ -52,7 +51,7 @@ export async function deliverRoleplayImage(cleanImageUrl, description) {
 
         const targetMsg = context.chat[messageIndex];
 
-        // Clean out any leftover {image} or {scene} tags
+        // Clean out any leftover XML tags
         targetMsg.mes = cleanTriggerTags(targetMsg.mes);
 
         const imageMarkdown = `\n\n![${descText}](${cleanImageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`;
