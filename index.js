@@ -36,8 +36,8 @@ const defaultSettings = {
     stylePrefix: 'semi-realistic anime style, 2.5D anime, 3D anime, masterpiece, best quality, cinematic lighting',
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, blurry, jpeg artifacts',
     marinaraPrompt: defaultMarinaraPrompt,
-    
-    // Resolution Configurations
+
+    // Resolutions
     resPortraitW: 832,
     resPortraitH: 1216,
     resLandscapeW: 1216,
@@ -47,13 +47,13 @@ const defaultSettings = {
     resBgW: 1344,
     resBgH: 768,
 
-    // ComfyUI Defaults
+    // ComfyUI
     comfySteps: 20,
     comfyCfg: 4.5,
     comfySampler: 'euler_ancestral',
     comfyScheduler: 'normal',
 
-    // LLM Config
+    // LLM
     llmProvider: 'current',
     customLlmUrl: 'https://api.openai.com/v1',
     customLlmKey: '',
@@ -69,7 +69,7 @@ let imageGalleryDb = [];
 let isEvaluating = false;
 let messageTurnCounter = 0;
 
-// Sequential FIFO Task Queue
+// Sequential Task Queue
 const taskQueue = [];
 let isQueueRunning = false;
 
@@ -92,7 +92,7 @@ async function processQueue() {
     isQueueRunning = false;
 }
 
-// Global server-synced storage (Identical across PC & Mobile)
+// Server-Synced Central Storage
 function loadStorage() {
     const context = SillyTavern.getContext();
     const settings = context.extensionSettings?.[MODULE_NAME];
@@ -114,7 +114,7 @@ function updateGalleryBubbleBadge() {
     $('#ia_gallery_bubble_badge').text(imageGalleryDb.length);
 }
 
-// Automatically resolve ComfyUI IP for mobile phones accessing PC
+// Smart IP Resolution for mobile
 function getEffectiveComfyUrl() {
     const s = SillyTavern.getContext().extensionSettings[MODULE_NAME];
     let url = (s.comfyUrl || 'http://127.0.0.1:8188').replace(/\/+$/, '');
@@ -131,7 +131,7 @@ function getEffectiveComfyUrl() {
     return url;
 }
 
-// Convert image URL to Base64 so all devices can display it without network issues
+// Base64 converter for universal device rendering
 async function convertUrlToBase64(imgUrl) {
     try {
         const res = await fetch(imgUrl);
@@ -142,7 +142,7 @@ async function convertUrlToBase64(imgUrl) {
             reader.readAsDataURL(blob);
         });
     } catch (e) {
-        console.warn('[Illustration Agent] Base64 conversion fallback to original URL', e);
+        console.warn('[Illustration Agent] Base64 conversion fallback', e);
         return imgUrl;
     }
 }
@@ -175,11 +175,12 @@ function inspectWorkflowMacros() {
     });
 }
 
-// 1. Inject UI Elements
+// 1. Inject UI Elements (Mounted to Body to remain visible when settings are closed)
 function injectUI() {
     if ($('#ia_main_container').length > 0) return;
 
-    const html = `
+    // A. Settings Drawer
+    const settingsHtml = `
     <div id="ia_main_container" class="illustration-agent-settings" style="margin-bottom: 12px;">
         <div class="inline-drawer">
             <div id="ia_drawer_toggle" class="inline-drawer-toggle inline-drawer-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 6px 10px;">
@@ -188,6 +189,20 @@ function injectUI() {
             </div>
             
             <div id="ia_drawer_content" class="inline-drawer-content" style="display: none; padding: 12px;">
+                <!-- Diagnostics / Ping Buttons -->
+                <div class="ia-section">
+                    <div class="ia-section-title"><i class="fa-solid fa-network-wired"></i> Connection Diagnostics</div>
+                    <div style="display: flex; gap: 8px;">
+                        <button type="button" id="ia_ping_llm_btn" class="menu_button" style="flex: 1;">
+                            <i class="fa-solid fa-brain"></i> Test LLM
+                        </button>
+                        <button type="button" id="ia_ping_image_btn" class="menu_button" style="flex: 1;">
+                            <i class="fa-solid fa-wand-magic-sparkles"></i> Test ComfyUI
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Core Pipeline Settings -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-sliders"></i> Core Pipeline Settings</div>
                     
@@ -231,8 +246,9 @@ function injectUI() {
                     </div>
 
                     <div class="ia-row">
-                        <label for="ia_batch_count"><b>Images per generation:</b></label>
+                        <label for="ia_batch_count"><b>Images per generation (Batch):</b></label>
                         <input type="number" id="ia_batch_count" class="text_pole" min="1" max="4" value="1">
+                        <small style="opacity: 0.7;">If > 1, a picker will let you choose which image to insert into roleplay.</small>
                     </div>
 
                     <div class="ia-row">
@@ -241,6 +257,7 @@ function injectUI() {
                     </div>
                 </div>
 
+                <!-- Custom Resolution Config -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-crop-simple"></i> Resolution & Aspect Ratios (W × H)</div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
@@ -275,6 +292,7 @@ function injectUI() {
                     </div>
                 </div>
 
+                <!-- Evaluator LLM API -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-brain"></i> Agent Evaluator LLM</div>
                     <div class="ia-row">
@@ -300,6 +318,7 @@ function injectUI() {
                     </div>
                 </div>
 
+                <!-- Image Backend Selection -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-wand-magic-sparkles"></i> Image Generation Backend</div>
                     <div class="ia-row">
@@ -347,6 +366,7 @@ function injectUI() {
                     </div>
                 </div>
 
+                <!-- Marinara Prompting Rules -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-file-code"></i> Marinara System Instructions & Macros</div>
                     <div class="ia-row">
@@ -369,19 +389,31 @@ function injectUI() {
             </div>
         </div>
     </div>
+    `;
+
+    const container = $('#extensions_settings').length ? $('#extensions_settings') : $('#extensions_settings2');
+    container.append(settingsHtml);
+
+    // B. Floating Modals & Android Bubble (Mounted to BODY to stay alive independently)
+    const bodyFloatingHtml = `
+    <!-- Draggable Android Chat-Head Bubble -->
+    <div id="ia_gallery_bubble" title="Drag anywhere or tap to open gallery">
+        <i id="ia_bubble_icon" class="fa-solid fa-camera-retro"></i>
+        <div id="ia_gallery_bubble_badge">0</div>
+    </div>
 
     <!-- Review Modal Container -->
-    <div id="ia_review_modal" style="display: none;">
+    <div id="ia_review_modal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 500px; max-width: 90vw; background: var(--SmartThemeBlurTintColor, #202028); border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; z-index: 100000; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.85);">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-            <b><i class="fa-solid fa-pen-to-square"></i> Review Scene Illustration Prompt</b>
+            <b><i class="fa-solid fa-pen-to-square"></i> Review Scene Illustration</b>
             <div id="ia_close_review" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
         </div>
         <div class="ia-row">
-            <label><b>Description (for Character Memory):</b></label>
+            <label><b>Description (Perceived by Character LLM):</b></label>
             <input type="text" id="ia_rev_desc" class="text_pole">
         </div>
         <div class="ia-row">
-            <label><b>Positive Prompt:</b></label>
+            <label><b>Positive Prompt (Image Generator):</b></label>
             <textarea id="ia_rev_positive" class="text_pole" rows="3"></textarea>
         </div>
         <div class="ia-row">
@@ -402,10 +434,14 @@ function injectUI() {
         </div>
     </div>
 
-    <!-- Draggable Android Chat-Head Bubble -->
-    <div id="ia_gallery_bubble" title="Drag me anywhere or tap to open gallery">
-        <i id="ia_bubble_icon" class="fa-solid fa-camera-retro"></i>
-        <div id="ia_gallery_bubble_badge">0</div>
+    <!-- Batch Candidate Picker Modal -->
+    <div id="ia_batch_picker_modal" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 8px;">
+            <b><i class="fa-solid fa-images"></i> Choose Image for Roleplay</b>
+            <div id="ia_close_batch_picker" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
+        </div>
+        <small style="opacity: 0.8; margin-top: 6px;">Tap the variation you want inserted into the chat. All candidates are saved in the gallery.</small>
+        <div id="ia_batch_grid" class="ia-batch-grid"></div>
     </div>
 
     <!-- Floating Window Gallery -->
@@ -428,16 +464,16 @@ function injectUI() {
     </div>
     `;
 
-    const container = $('#extensions_settings').length ? $('#extensions_settings') : $('#extensions_settings2');
-    container.append(html);
+    $('body').append(bodyFloatingHtml);
 
     $('#ia_drawer_content').on('click', (e) => e.stopPropagation());
     
-    // Bind Controls
+    // Bind Windows & Buttons
     $('#ia_open_gallery_btn').on('click', (e) => { e.stopPropagation(); openGalleryWindow(); });
     $('#ia_win_min_btn').on('click', minimizeGalleryWindow);
     $('#ia_win_close_btn').on('click', closeGalleryWindow);
     $('#ia_close_review, #ia_rev_cancel').on('click', () => $('#ia_review_modal').fadeOut(150));
+    $('#ia_close_batch_picker').on('click', () => $('#ia_batch_picker_modal').fadeOut(150));
 
     setupAndroidBubbleDraggable();
 }
@@ -476,7 +512,6 @@ function setupAndroidBubbleDraggable() {
             let nextX = initLeft + dx;
             let nextY = initTop + dy;
 
-            // Clamp inside viewport
             nextX = Math.max(8, Math.min(window.innerWidth - 60, nextX));
             nextY = Math.max(8, Math.min(window.innerHeight - 60, nextY));
 
@@ -494,7 +529,6 @@ function setupAndroidBubbleDraggable() {
         isDragging = false;
 
         if (thresholdExceeded) {
-            // Android Edge-Snapping: snap smoothly to nearest left or right edge
             const rect = $bubble[0].getBoundingClientRect();
             const midX = window.innerWidth / 2;
             const targetX = (rect.left + 26 < midX) ? 12 : (window.innerWidth - 64);
@@ -503,7 +537,6 @@ function setupAndroidBubbleDraggable() {
             $bubble.css('left', targetX + 'px');
             setTimeout(() => $bubble.css({ transition: 'none' }), 250);
         } else {
-            // Tap / Click without dragging: open the window
             openGalleryWindow();
         }
     });
@@ -625,9 +658,55 @@ function bindUI() {
 
     $('#ia_manual_eval_btn').on('click', (e) => { e.stopPropagation(); runEvaluation(true); });
     $('#ia_gallery_flat_toggle').on('change', () => renderGalleryContent());
+
+    // Diagnostics Test Handlers
+    $('#ia_ping_llm_btn').on('click', pingLLM);
+    $('#ia_ping_image_btn').on('click', pingImageBackend);
 }
 
-// 3. Evaluator LLM Calls
+// 3. Connection Diagnostics (Ping Functions)
+async function pingLLM() {
+    toastr.info('Testing connection to LLM...', 'Diagnostics');
+    const start = performance.now();
+    try {
+        const res = await queryAgentLLM('Reply with the single word: "READY"');
+        const ms = Math.round(performance.now() - start);
+        if (res) {
+            toastr.success(`LLM is online! (${ms}ms) Response: ${res.substring(0, 30)}`, 'Diagnostics');
+        } else {
+            toastr.error('LLM returned an empty response.', 'Diagnostics');
+        }
+    } catch (e) {
+        toastr.error(`LLM Connection Failed: ${e.message}`, 'Diagnostics');
+    }
+}
+
+async function pingImageBackend() {
+    const s = SillyTavern.getContext().extensionSettings[MODULE_NAME];
+    toastr.info('Testing Image Generator connection...', 'Diagnostics');
+
+    if (s.imageBackend === 'comfyui_direct') {
+        const baseUrl = getEffectiveComfyUrl();
+        const start = performance.now();
+        try {
+            const resp = await fetch(`${baseUrl}/system_stats`);
+            const ms = Math.round(performance.now() - start);
+            if (resp.ok) {
+                const data = await resp.json();
+                const vram = data?.devices?.[0]?.vram_total ? ` - VRAM: ${(data.devices[0].vram_total / 1073741824).toFixed(1)}GB` : '';
+                toastr.success(`ComfyUI Connected! (${ms}ms)${vram}`, 'Diagnostics');
+            } else {
+                throw new Error(`HTTP ${resp.status}`);
+            }
+        } catch (e) {
+            toastr.error(`ComfyUI Unreachable at ${baseUrl}: ${e.message}`, 'Diagnostics');
+        }
+    } else {
+        toastr.success('Using SillyTavern native (/imagine). Ready!', 'Diagnostics');
+    }
+}
+
+// 4. Evaluator LLM Calls
 async function queryAgentLLM(fullPrompt) {
     const s = SillyTavern.getContext().extensionSettings[MODULE_NAME];
 
@@ -662,7 +741,7 @@ function findExistingBackground(locationName) {
     });
 }
 
-// 4. Main Evaluation Engine
+// 5. Main Evaluation Engine
 async function runEvaluation(force = false) {
     if (isEvaluating) return;
     const context = SillyTavern.getContext();
@@ -674,7 +753,6 @@ async function runEvaluation(force = false) {
     if (!force && s.triggerMode === 'interval') {
         messageTurnCounter++;
         if (messageTurnCounter % (s.triggerInterval || 3) !== 0) {
-            console.log(`[Illustration Agent] Interval skipping turn (${messageTurnCounter}/${s.triggerInterval})`);
             return;
         }
     }
@@ -701,10 +779,10 @@ ${contextText}
 ${lastMsg.mes}
 </assistant_response>`;
 
-        // Activate Android Bubble thinking indicator
+        // Activate Android Bubble visual indicator
         $('#ia_gallery_bubble').addClass('is-generating');
         $('#ia_bubble_icon').removeClass('fa-camera-retro').addClass('fa-wand-magic-sparkles fa-spin');
-        toastr.info('Illustration Agent evaluating scene...', 'Marinara');
+        toastr.info('Autonomous Illustrator: Analyzing latest turn...', 'Marinara');
 
         const rawResponse = await queryAgentLLM(fullPrompt);
         if (!rawResponse) {
@@ -720,7 +798,7 @@ ${lastMsg.mes}
 
         console.log('[Illustration Agent Decision]', result);
 
-        // A. Background
+        // MUTUAL EXCLUSION: Background takes priority over character art to avoid collisions
         if (result.generateBackground) {
             const loc = result.location || 'New Scene';
             const matchedBg = findExistingBackground(loc);
@@ -728,6 +806,7 @@ ${lastMsg.mes}
             if (matchedBg) {
                 toastr.success(`Reusing background: "${matchedBg.location}"`, 'Marinara');
                 await context.executeSlashCommands(`/bg ${matchedBg.url}`);
+                resetGeneratingIndicator();
             } else {
                 enqueueTask(async () => {
                     toastr.info(`Queue: Generating background for "${loc}"...`, 'Marinara');
@@ -743,12 +822,11 @@ ${lastMsg.mes}
                         toastr.success(`Background updated: ${loc}`, 'Marinara');
                         await context.executeSlashCommands(`/bg ${bgUrl}`);
                     }
+                    resetGeneratingIndicator();
                 });
             }
-        }
-
-        // B. Character Illustration
-        if (force || result.shouldGenerate === true) {
+        } else if (force || result.shouldGenerate === true) {
+            // Roleplay illustration
             const combinedPos = [s.stylePrefix, result.prompt].filter(Boolean).join(', ');
             const combinedNeg = [s.defaultNegative, result.negativePrompt].filter(Boolean).join(', ');
 
@@ -760,6 +838,7 @@ ${lastMsg.mes}
                 });
             }
         } else {
+            toastr.info('Illustrator: Scene is static; no illustration needed.', 'Marinara');
             resetGeneratingIndicator();
         }
     } catch (e) {
@@ -792,7 +871,7 @@ function promptReviewModal(pos, neg, ar, metadata) {
     });
 }
 
-// 5. Image Pipeline Execution
+// 6. Image Pipeline Execution & Batch Candidate Handling
 async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
     const context = SillyTavern.getContext();
     const s = context.extensionSettings[MODULE_NAME];
@@ -810,21 +889,53 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
     }
 
     const totalBatch = s.batchCount || 1;
+    const generatedUrls = [];
 
     try {
         for (let i = 0; i < totalBatch; i++) {
             if (s.imageBackend === 'comfyui_direct') {
                 const imageUrl = await generateComfyImage(positive, negative, width, height, metadata);
-                if (imageUrl) {
-                    injectImageIntoChatMessage(imageUrl, metadata.description);
-                }
+                if (imageUrl) generatedUrls.push(imageUrl);
             } else {
                 await context.executeSlashCommands(`/imagine ${positive}`);
             }
         }
+
+        if (generatedUrls.length === 1) {
+            // Single image: directly inject into roleplay
+            injectImageIntoChatMessage(generatedUrls[0], metadata.description);
+        } else if (generatedUrls.length > 1) {
+            // Multiple images: prompt user to pick the one for roleplay
+            showBatchCandidatePicker(generatedUrls, metadata.description);
+        }
     } finally {
         resetGeneratingIndicator();
     }
+}
+
+function showBatchCandidatePicker(urls, description) {
+    const $grid = $('#ia_batch_grid').empty();
+
+    urls.forEach((url, idx) => {
+        const $item = $(`
+            <div class="ia-batch-item" title="Click to insert Variation #${idx + 1} into Roleplay">
+                <img src="${url}" />
+                <div style="padding: 6px; text-align: center; font-size: 0.85em; background: rgba(0,0,0,0.4);">
+                    <b>Variation #${idx + 1}</b>
+                </div>
+            </div>
+        `);
+
+        $item.on('click', () => {
+            injectImageIntoChatMessage(url, description);
+            $('#ia_batch_picker_modal').fadeOut(150);
+            toastr.success(`Inserted Variation #${idx + 1} into roleplay!`, 'Marinara');
+        });
+
+        $grid.append($item);
+    });
+
+    $('#ia_batch_picker_modal').fadeIn(150);
 }
 
 async function pollComfyResult(comfyUrl, promptId, maxAttempts = 75) {
@@ -852,12 +963,11 @@ async function pollComfyResult(comfyUrl, promptId, maxAttempts = 75) {
     throw new Error('ComfyUI generation timed out.');
 }
 
-// Injects the Base64 image directly into the active chat message
+// Injects the image and the narrative vision description for non-multimodal LLMs
 function injectImageIntoChatMessage(imageUrl, description) {
     const context = SillyTavern.getContext();
     if (!context || !context.chat || context.chat.length === 0) return;
 
-    // Find the latest assistant message
     let messageIndex = context.chat.length - 1;
     while (messageIndex >= 0 && context.chat[messageIndex].is_user) {
         messageIndex--;
@@ -865,7 +975,10 @@ function injectImageIntoChatMessage(imageUrl, description) {
     if (messageIndex < 0) messageIndex = context.chat.length - 1;
 
     const targetMsg = context.chat[messageIndex];
-    const imageMarkdown = `\n\n![${description || 'Illustration'}](${imageUrl})`;
+    const descText = description || 'A photo of the scene';
+
+    // Formatted so non-multimodal LLMs read the description during roleplay
+    const imageMarkdown = `\n\n![[Scene Description: ${descText}]](${imageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`;
 
     if (!targetMsg.mes.includes(imageUrl)) {
         targetMsg.mes += imageMarkdown;
@@ -877,12 +990,13 @@ function injectImageIntoChatMessage(imageUrl, description) {
             context.saveChatDebounced();
         }
 
-        // Direct DOM update guarantee (works instantly across all devices)
+        // Direct DOM update guarantee
         const $mesElement = $(`#chat .mes[mesid="${messageIndex}"] .mes_text, .mes_text`).last();
         if ($mesElement.length && !$mesElement.find(`img[src="${imageUrl}"]`).length) {
             $mesElement.append(`
                 <div class="ia-img-wrapper" style="margin-top: 10px;">
-                    <img src="${imageUrl}" alt="${description || 'Illustration'}" />
+                    <img src="${imageUrl}" alt="${descText}" title="${descText}" />
+                    <span class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</span>
                     <button type="button" class="ia-reroll-btn"><i class="fa-solid fa-rotate-right"></i> Reroll</button>
                 </div>
             `);
@@ -947,10 +1061,7 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
         const data = await resp.json();
         toastr.info(`ComfyUI Running (${data.prompt_id})...`, 'Marinara');
 
-        // Poll raw URL from ComfyUI
         const rawImageUrl = await pollComfyResult(comfyBaseUrl, data.prompt_id);
-
-        // Convert to Base64 so it can be viewed on any device
         const base64Url = await convertUrlToBase64(rawImageUrl);
 
         recordImage({
@@ -976,7 +1087,7 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
     }
 }
 
-// 6. Shared Gallery System
+// 7. Gallery System
 function recordImage(entry) {
     loadStorage();
     imageGalleryDb.unshift(entry);
@@ -1052,11 +1163,11 @@ function renderGalleryContent(filterChar = null, filterType = null) {
                         <b style="font-size: 0.88em;">${r.character}</b>
                         ${tagBadge}
                     </div>
-                    <div class="ia-desc-text">${r.description || r.reason || 'No description recorded'}</div>
+                    <div class="ia-desc-text" title="${r.description || r.reason}">${r.description || r.reason || 'No description'}</div>
                     <div class="ia-card-actions">
                         ${r.type === 'background'
                             ? `<button type="button" class="ia-card-btn ia-set-bg-btn"><i class="fa-solid fa-mountain-sun"></i> Set BG</button>`
-                            : `<button type="button" class="ia-card-btn ia-show-char-btn"><i class="fa-solid fa-comment-dots"></i> Show to Char</button>`
+                            : `<button type="button" class="ia-card-btn ia-insert-roleplay-btn"><i class="fa-solid fa-comment-medical"></i> Insert to Chat</button>`
                         }
                     </div>
                 </div>
@@ -1067,19 +1178,15 @@ function renderGalleryContent(filterChar = null, filterType = null) {
             e.stopPropagation();
             if (r.url) {
                 await SillyTavern.getContext().executeSlashCommands(`/bg ${r.url}`);
-                toastr.success(`Set active wallpaper: ${r.location || 'Scene'}`, 'Marinara');
+                toastr.success(`Set wallpaper: ${r.location || 'Scene'}`, 'Marinara');
             }
         });
 
-        $card.find('.ia-show-char-btn').on('click', async (e) => {
+        // Inserts previously generated gallery photo directly into the active roleplay turn
+        $card.find('.ia-insert-roleplay-btn').on('click', async (e) => {
             e.stopPropagation();
-            const desc = r.description || r.reason;
-            const context = SillyTavern.getContext();
-            const charName = context.characters?.[context.characterId]?.name || 'Character';
-
-            const userPrompt = `*shows ${charName} the photo: [Photo Details: ${desc}]*`;
-            $('#send_textarea').val(userPrompt).trigger('input');
-            toastr.info(`Attached photo description to chat input!`, 'Marinara');
+            injectImageIntoChatMessage(r.url, r.description);
+            toastr.success('Inserted photo & vision description into chat!', 'Marinara');
             closeGalleryWindow();
         });
 
@@ -1087,7 +1194,7 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     });
 }
 
-// 7. In-Chat Reroll Buttons
+// 8. In-Chat Reroll Buttons
 function attachInChatMessageButtons() {
     $('.mes_text img').each(function () {
         const $img = $(this);
@@ -1105,7 +1212,7 @@ function attachInChatMessageButtons() {
     });
 }
 
-// 8. Lifecycle
+// 9. SillyTavern Lifecycle Hookup
 jQuery(async () => {
     injectUI();
     loadSettings();
@@ -1116,21 +1223,33 @@ jQuery(async () => {
     const { eventSource, eventTypes } = context;
 
     if (eventSource && eventTypes) {
-        eventSource.on(eventTypes.CHAT_COMPLETION_STARTED || 'chat_completion_started', () => {
+        // Pre-generation
+        const startEvt = eventTypes.CHAT_COMPLETION_STARTED || 'chat_completion_started';
+        eventSource.on(startEvt, () => {
             if (context.extensionSettings[MODULE_NAME]?.pipelinePhase === 'pre') {
                 runEvaluation(false);
             }
         });
 
-        eventSource.on(eventTypes.CHAT_COMPLETION_FINISHED, () => {
+        // Turn completion hook (covers both CHAT_COMPLETION_FINISHED and MESSAGE_RECEIVED)
+        const finishEvt = eventTypes.CHAT_COMPLETION_FINISHED || 'chat_completion_finished';
+        eventSource.on(finishEvt, () => {
             attachInChatMessageButtons();
             const phase = context.extensionSettings[MODULE_NAME]?.pipelinePhase || 'post';
             if (phase === 'post' || phase === 'parallel') {
                 runEvaluation(false);
             }
         });
+
+        if (eventTypes.MESSAGE_RECEIVED) {
+            eventSource.on(eventTypes.MESSAGE_RECEIVED, (data) => {
+                if (data && !data.is_user && context.extensionSettings[MODULE_NAME]?.enabled) {
+                    attachInChatMessageButtons();
+                }
+            });
+        }
     }
 
     setInterval(attachInChatMessageButtons, 2500);
-    console.log('[Illustration Agent] Unified Cross-Device & Android Bubble Architecture Ready.');
+    console.log('[Illustration Agent] Autonomous Engine & Android Chat-Head Initialized.');
 });
