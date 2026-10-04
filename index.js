@@ -34,13 +34,13 @@ const defaultSettings = {
     marinaraPrompt: defaultMarinaraPrompt,
     
     // LLM Settings
-    llmProvider: 'current', // 'current' or 'custom'
+    llmProvider: 'current',
     customLlmUrl: 'https://api.openai.com/v1',
     customLlmKey: '',
     customLlmModel: 'gpt-4o-mini',
 
     // Image Backend
-    imageBackend: 'sillytavern', // 'sillytavern' or 'comfyui_direct'
+    imageBackend: 'sillytavern',
     comfyUrl: 'http://127.0.0.1:8188',
     comfyPosNode: '6',
     comfyNegNode: '7',
@@ -56,7 +56,6 @@ const defaultSettings = {
 }`
 };
 
-// Memory storage for images
 let imageGalleryDb = [];
 let isEvaluating = false;
 
@@ -73,7 +72,7 @@ function saveStorage() {
     try {
         localStorage.setItem('ia_gallery_records', JSON.stringify(imageGalleryDb));
     } catch (e) {
-        console.warn('[Illustration Agent] Storage limit reached or error', e);
+        console.warn('[Illustration Agent] Storage error', e);
     }
 }
 
@@ -84,6 +83,7 @@ function injectUI() {
     const html = `
     <div id="ia_main_container" class="illustration-agent-settings" style="margin-bottom: 12px;">
         <div class="inline-drawer">
+            <!-- Handled natively by SillyTavern's inline-drawer-toggle -->
             <div id="ia_drawer_toggle" class="inline-drawer-toggle inline-drawer-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 6px 10px;">
                 <b><i class="fa-solid fa-palette" style="margin-right: 6px; color: #ff7675;"></i>Marinara Illustration Agent</b>
                 <div id="ia_drawer_icon" class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
@@ -99,7 +99,7 @@ function injectUI() {
                             <input type="checkbox" id="ia_enabled">
                             <span><b>Enable Autonomous Illustrator</b></span>
                         </label>
-                        <button id="ia_open_gallery_btn" class="menu_button" style="padding: 3px 8px;">
+                        <button type="button" id="ia_open_gallery_btn" class="menu_button" style="padding: 3px 8px;">
                             <i class="fa-solid fa-images"></i> Gallery
                         </button>
                     </div>
@@ -211,7 +211,7 @@ function injectUI() {
                     </div>
                 </div>
 
-                <button id="ia_manual_eval_btn" class="menu_button" style="width: 100%; margin-top: 6px;">
+                <button type="button" id="ia_manual_eval_btn" class="menu_button" style="width: 100%; margin-top: 6px;">
                     <i class="fa-solid fa-bolt"></i> Evaluate & Illustrate Scene Now
                 </button>
             </div>
@@ -241,8 +241,8 @@ function injectUI() {
             </select>
         </div>
         <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;">
-            <button id="ia_rev_cancel" class="menu_button">Cancel</button>
-            <button id="ia_rev_confirm" class="menu_button" style="background: #27ae60; color: white;">Generate Now</button>
+            <button type="button" id="ia_rev_cancel" class="menu_button">Cancel</button>
+            <button type="button" id="ia_rev_confirm" class="menu_button" style="background: #27ae60; color: white;">Generate Now</button>
         </div>
     </div>
 
@@ -255,16 +255,12 @@ function injectUI() {
                     <input type="checkbox" id="ia_gallery_flat_toggle">
                     <span>Flat View (Sorted by Date)</span>
                 </label>
-                <button id="ia_gallery_close_btn" class="menu_button"><i class="fa-solid fa-xmark"></i> Close</button>
+                <button type="button" id="ia_gallery_close_btn" class="menu_button"><i class="fa-solid fa-xmark"></i> Close</button>
             </div>
         </div>
         <div class="ia-gallery-body">
-            <div id="ia_gallery_nav" class="ia-gallery-sidebar">
-                <!-- Injected Category tree -->
-            </div>
-            <div id="ia_gallery_content" class="ia-gallery-grid">
-                <!-- Injected Images -->
-            </div>
+            <div id="ia_gallery_nav" class="ia-gallery-sidebar"></div>
+            <div id="ia_gallery_content" class="ia-gallery-grid"></div>
         </div>
     </div>
     `;
@@ -272,13 +268,10 @@ function injectUI() {
     const container = $('#extensions_settings').length ? $('#extensions_settings') : $('#extensions_settings2');
     container.append(html);
 
-    // Toggle drawer
-    $('#ia_drawer_toggle').off('click').on('click', () => {
-        $('#ia_drawer_content').slideToggle(150);
-        $('#ia_drawer_icon').toggleClass('down up fa-circle-chevron-down fa-circle-chevron-up');
-    });
+    // Stop inside clicks from bubbling up to any drawer containers
+    $('#ia_drawer_content').on('click', (e) => e.stopPropagation());
 
-    $('#ia_open_gallery_btn').on('click', openGallery);
+    $('#ia_open_gallery_btn').on('click', (e) => { e.stopPropagation(); openGallery(); });
     $('#ia_gallery_close_btn').on('click', () => $('#ia_gallery_modal').fadeOut(150));
     $('#ia_close_review, #ia_rev_cancel').on('click', () => $('#ia_review_modal').fadeOut(150));
 }
@@ -345,7 +338,7 @@ function bindUI() {
     $('#ia_comfy_seed_node').on('input', function () { s.comfySeedNode = $(this).val(); save(); });
     $('#ia_comfy_workflow').on('input', function () { s.comfyWorkflow = $(this).val(); save(); });
 
-    $('#ia_manual_eval_btn').on('click', () => runEvaluation(true));
+    $('#ia_manual_eval_btn').on('click', (e) => { e.stopPropagation(); runEvaluation(true); });
     $('#ia_gallery_flat_toggle').on('change', renderGalleryContent);
 }
 
@@ -387,12 +380,10 @@ async function runEvaluation(force = false) {
         const recentMessages = context.chat.slice(-s.lookback);
         const lastMsg = recentMessages[recentMessages.length - 1];
 
-        // Format recent messages for continuity
         const contextText = recentMessages.map(m => `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${m.mes}`).join('\n\n');
         const activeChar = context.characters?.[context.characterId];
         const charDescription = activeChar?.data?.description || activeChar?.description || '';
 
-        // Inject Marinara anchors
         const fullPrompt = `${s.marinaraPrompt}
 
 Current Character Reference:
@@ -418,14 +409,12 @@ ${lastMsg.mes}
 
         console.log('[Illustration Agent Decision]', result);
 
-        // Handle Background Change
         if (result.generateBackground) {
             toastr.info(`Background update triggered: ${result.reason}`, 'Marinara');
             const bgPrompt = [s.stylePrefix, result.prompt, 'scenery, landscape, empty scene, no people'].filter(Boolean).join(', ');
             await context.executeSlashCommands(`/bg ${bgPrompt}`);
         }
 
-        // Handle Character / Scene Illustration
         if (force || result.shouldGenerate === true) {
             const combinedPos = [s.stylePrefix, result.prompt].filter(Boolean).join(', ');
             const combinedNeg = [s.defaultNegative, result.negativePrompt].filter(Boolean).join(', ');
@@ -469,7 +458,6 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
         if (s.imageBackend === 'comfyui_direct') {
             await executeComfyDirect(positive, negative, aspectRatio, metadata);
         } else {
-            // Default SillyTavern slash command
             await context.executeSlashCommands(`/imagine ${positive}`);
         }
     }
@@ -480,7 +468,6 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
     try {
         const workflow = JSON.parse(s.comfyWorkflow);
 
-        // Map prompts into configured nodes
         if (workflow[s.comfyPosNode]) workflow[s.comfyPosNode].inputs.text = positive;
         if (workflow[s.comfyNegNode]) workflow[s.comfyNegNode].inputs.text = negative;
         if (workflow[s.comfySeedNode]) workflow[s.comfySeedNode].inputs.seed = Math.floor(Math.random() * 1000000000);
@@ -493,7 +480,6 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
         const data = await resp.json();
         toastr.info(`ComfyUI Prompt Queued (ID: ${data.prompt_id})`, 'Marinara');
 
-        // Record generation in extension gallery
         recordImage({
             id: Date.now() + Math.random().toString(36).substr(2, 4),
             character: SillyTavern.getContext().characters?.[SillyTavern.getContext().characterId]?.name || 'Unknown',
@@ -503,7 +489,7 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
             negative,
             aspectRatio,
             reason: metadata.reason,
-            url: '' // Will be updated if WebSocket listener configured
+            url: ''
         });
     } catch (e) {
         console.error('[ComfyUI Direct Error]', e);
@@ -579,10 +565,11 @@ function attachInChatMessageButtons() {
         if ($img.parent().hasClass('ia-img-wrapper')) return;
 
         $img.wrap('<div class="ia-img-wrapper"></div>');
-        const $btn = $('<button class="ia-reroll-btn"><i class="fa-solid fa-rotate-right"></i> Reroll</button>');
+        const $btn = $('<button type="button" class="ia-reroll-btn"><i class="fa-solid fa-rotate-right"></i> Reroll</button>');
         $img.after($btn);
 
-        $btn.on('click', async () => {
+        $btn.on('click', async (e) => {
+            e.stopPropagation();
             toastr.info('Rerolling illustration...', 'Marinara');
             await runEvaluation(true);
         });
@@ -600,14 +587,12 @@ jQuery(async () => {
     const { eventSource, eventTypes } = context;
 
     if (eventSource && eventTypes) {
-        // Pre-generation phase
         eventSource.on(eventTypes.CHAT_COMPLETION_STARTED || 'chat_completion_started', () => {
             if (context.extensionSettings[MODULE_NAME]?.pipelinePhase === 'pre') {
                 runEvaluation(false);
             }
         });
 
-        // Post-processing phase (Default)
         eventSource.on(eventTypes.CHAT_COMPLETION_FINISHED, () => {
             attachInChatMessageButtons();
             const phase = context.extensionSettings[MODULE_NAME]?.pipelinePhase || 'post';
@@ -617,8 +602,6 @@ jQuery(async () => {
         });
     }
 
-    // Attach reroll buttons on chat selection/load
     setInterval(attachInChatMessageButtons, 2000);
-
     console.log('[Illustration Agent] Marinara Architecture Engine Loaded.');
 });
