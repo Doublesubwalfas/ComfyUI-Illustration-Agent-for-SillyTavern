@@ -16,6 +16,7 @@ export function getEffectiveComfyUrl() {
     return url;
 }
 
+// Uploads standard roleplay images to ST's chat uploads
 async function uploadToSillyTavernServer(imgBlob, filename) {
     try {
         const formData = new FormData();
@@ -32,6 +33,27 @@ async function uploadToSillyTavernServer(imgBlob, filename) {
         }
     } catch (e) {
         console.warn('[Illustration Agent] Direct /api/files/upload fallback', e);
+    }
+    return null;
+}
+
+// Uploads Backgrounds directly to SillyTavern's core Backgrounds list
+async function uploadBackgroundToSillyTavernServer(imgBlob, filename) {
+    try {
+        const formData = new FormData();
+        formData.append('avatar', imgBlob, filename); // ST expects 'avatar' key for bg upload
+
+        const resp = await fetch('/api/backgrounds/upload', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (resp.ok) {
+            // It gets saved into public/backgrounds/ as the exact filename
+            return filename;
+        }
+    } catch (e) {
+        console.warn('[Illustration Agent] Background API upload fallback', e);
     }
     return null;
 }
@@ -134,11 +156,19 @@ export async function generateComfyImage(positive, negative, width, height, meta
     const imgResp = await fetch(comfyDirectUrl);
     const imgBlob = await imgResp.blob();
 
-    const filename = `ia_${Date.now()}.png`;
-    let serverPath = await uploadToSillyTavernServer(imgBlob, filename);
-    const base64Url = await convertBlobToBase64(imgBlob);
+    const isBg = metadata.isBackground;
+    const filename = `ia_${isBg ? 'bg' : 'img'}_${Date.now()}.png`;
+    let finalCleanUrl = comfyDirectUrl;
 
-    const finalCleanUrl = serverPath || comfyDirectUrl;
+    if (isBg) {
+        const uploadedBgName = await uploadBackgroundToSillyTavernServer(imgBlob, filename);
+        if (uploadedBgName) finalCleanUrl = uploadedBgName; // We pass the bare filename for ST slash commands
+    } else {
+        const serverPath = await uploadToSillyTavernServer(imgBlob, filename);
+        if (serverPath) finalCleanUrl = serverPath;
+    }
+
+    const base64Url = await convertBlobToBase64(imgBlob);
 
     saveGalleryRecord({
         id: Date.now() + Math.random().toString(36).substr(2, 4),
@@ -149,11 +179,12 @@ export async function generateComfyImage(positive, negative, width, height, meta
         positive,
         negative,
         aspectRatio: `${width}x${height}`,
-        type: metadata.isBackground ? 'background' : 'illustration',
+        type: isBg ? 'background' : 'illustration',
         location: metadata.location || '',
         reason: metadata.reason,
-        url: finalCleanUrl,
-        base64Backup: base64Url
+        url: finalCleanUrl, // if bg, this is just the filename. If img, it's the full relative path
+        base64Backup: base64Url,
+        favorite: false
     });
 
     return { cleanUrl: finalCleanUrl, base64Url };

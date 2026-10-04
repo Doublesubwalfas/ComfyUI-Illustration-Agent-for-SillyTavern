@@ -19,6 +19,18 @@ export async function persistChat() {
     }
 }
 
+// Shows an image into the roleplay context as an active interaction from the User
+export async function showImageToCharacter(cleanImageUrl, description) {
+    const context = SillyTavern.getContext();
+    // Resolve pure filenames to background path if needed
+    const displayUrl = cleanImageUrl.startsWith('ia_bg_') ? `/backgrounds/${cleanImageUrl}` : cleanImageUrl;
+    const descText = description || 'An image';
+    const text = `[I show you a picture: *${descText}*]\n\n![Image](${displayUrl})`;
+    
+    await context.executeSlashCommands(`/send ${text}`);
+    toastr.success('Image sent to character in chat.', 'Doublesub');
+}
+
 export async function deliverRoleplayImage(cleanImageUrl, description) {
     const context = SillyTavern.getContext();
     if (!context || !context.chat || context.chat.length === 0) return;

@@ -69,17 +69,14 @@ export async function runEvaluation(force = false, tags = null) {
     if (!context.chat || context.chat.length === 0) return;
     if (!s.enabled) return;
 
-    // 1. FORCED Context Window: Strictly slice the exact lookback number
     const lookbackCount = Math.max(1, parseInt(s.lookback) || 3);
     const recentMessages = context.chat.slice(-lookbackCount);
     const lastMsg = recentMessages[recentMessages.length - 1];
 
-    // Detect tags (either passed proactively from index.js before cleaning, or fallback parse)
     const lastMsgTextRaw = lastMsg.mes || '';
     const hasImageTag = tags ? tags.hasImage : /\{\s*image\s*\}/i.test(lastMsgTextRaw);
     const hasSceneTag = tags ? tags.hasScene : /\{\s*scene\s*\}/i.test(lastMsgTextRaw);
 
-    // MODE 2 EVALUATION GUARD
     if (!force && s.agentMode === 'mode2') {
         if (!hasImageTag && !hasSceneTag) {
             console.log('[Illustration Agent] Mode 2: No {image} or {scene} tag found in assistant turn. Skipping.');
@@ -87,7 +84,6 @@ export async function runEvaluation(force = false, tags = null) {
         }
     }
 
-    // MODE 3 EVALUATION GUARD (Pure Interval)
     if (!force && s.agentMode === 'mode3') {
         messageTurnCounter++;
         if (messageTurnCounter % (s.triggerInterval || 3) !== 0) {
@@ -98,7 +94,6 @@ export async function runEvaluation(force = false, tags = null) {
 
     isEvaluating = true;
     try {
-        // Build strictly isolated context (no lorebook, no full history)
         const contextText = recentMessages
             .map(m => `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${cleanTriggerTags(m.mes)}`)
             .join('\n\n');
@@ -139,68 +134,69 @@ ${cleanTriggerTags(lastMsg.mes)}
 
         console.log('[Illustration Agent Decision]', result);
 
-        // Decision Handling based on Active Mode
-        let shouldGen = force || (result.decision === 'yes');
-        let isBg = (result.target === 'background');
-
-        // Mode 2 overrides
-        if (s.agentMode === 'mode2') {
-            shouldGen = true;
-            isBg = false; // Mode 2 has no background functionality
-            if (hasSceneTag) {
-                result.description = ''; // Only {image} carries narrative photo description
-            }
-        }
-
-        // Mode 3 overrides
-        if (s.agentMode === 'mode3') {
-            shouldGen = true;
-            isBg = false;
-        }
-
-        // MUTUAL EXCLUSION
-        if (shouldGen && isBg) {
-            const loc = result.location || 'New Scene';
-            const matchedBg = findExistingBackground(loc);
-
-            if (matchedBg) {
-                toastr.success(`Decision: Reusing background "${matchedBg.location}"`, 'Doublesub');
-                await context.executeSlashCommands(`/bg ${matchedBg.url}`);
-                resetGeneratingIndicator();
-            } else {
-                toastr.info(`Decision: Generating background for "${loc}"`, 'Doublesub');
-                enqueueTask(async () => {
-                    const bgPositive = [s.stylePrefix, result.prompt, 'scenery, landscape, interior, detailed background, no people, empty scene'].filter(Boolean).join(', ');
-                    const bgNegative = [s.defaultNegative, 'character, person, people, human, face, girl, boy, 1girl'].filter(Boolean).join(', ');
-
-                    const bgResult = await generateComfyImage(bgPositive, bgNegative, s.resBgW, s.resBgH, {
-                        ...result,
-                        isBackground: true
-                    });
-
-                    if (bgResult && bgResult.cleanUrl) {
-                        toastr.success(`Background updated: ${loc}`, 'Doublesub');
-                        await context.executeSlashCommands(`/bg ${bgResult.cleanUrl}`);
-                    }
-                    resetGeneratingIndicator();
-                });
-            }
-        } else if (shouldGen) {
-            toastr.success(`Decision: Illustrating scene (${result.reason || 'Active Moment'})`, 'Doublesub');
-            const combinedPos = [s.stylePrefix, result.prompt].filter(Boolean).join(', ');
-            const combinedNeg = [s.defaultNegative, result.negativePrompt].filter(Boolean).join(', ');
-
-            if (s.interactiveReview) {
-                promptReviewModal(combinedPos, combinedNeg, result.aspectRatio, result, executeImagePipeline);
-            } else {
-                enqueueTask(async () => {
-                    await executeImagePipeline(combinedPos, combinedNeg, result.aspectRatio, result);
-                });
-            }
-        } else {
-            toastr.info(`Decision: Static scene, no illustration needed. (${result.reason || 'No shift'})`, 'Doublesub');
+        if (result.decision !== 'yes' && !force) {
+            toastr.info(`Decision: Static scene, no illustration needed.`, 'Doublesub');
             resetGeneratingIndicator();
+            return;
         }
+
+        // Support array of illustrations (Mode 1 multi-queue) or fallback to single object (Legacy/Mode 2/3)
+        let items = Array.isArray(result.illustrations) ? result.illustrations : [result];
+
+        items.forEach(item => {
+            let isBg = (item.type === 'background' || item.target === 'background');
+            
+            if (s.agentMode === 'mode2') {
+                isBg = false;
+                if (hasSceneTag) item.description = '';
+            }
+            if (s.agentMode === 'mode3') {
+                isBg = false;
+            }
+
+            if (isBg) {
+                const loc = item.location || 'New Scene';
+                const matchedBg = findExistingBackground(loc);
+
+                if (matchedBg) {
+                    toastr.success(`Decision: Reusing background "${matchedBg.location}"`, 'Doublesub');
+                    enqueueTask(async () => {
+                        await context.executeSlashCommands(`/bg ${matchedBg.url}`);
+                        resetGeneratingIndicator();
+                    });
+                } else {
+                    toastr.info(`Decision: Generating background for "${loc}"`, 'Doublesub');
+                    enqueueTask(async () => {
+                        const bgPositive = [s.stylePrefix, item.prompt, 'scenery, landscape, interior, detailed background, no people, empty scene'].filter(Boolean).join(', ');
+                        const bgNegative = [s.defaultNegative, 'character, person, people, human, face, girl, boy, 1girl'].filter(Boolean).join(', ');
+
+                        const bgResult = await generateComfyImage(bgPositive, bgNegative, s.resBgW, s.resBgH, {
+                            ...item,
+                            isBackground: true
+                        });
+
+                        if (bgResult && bgResult.cleanUrl) {
+                            toastr.success(`Background updated: ${loc}`, 'Doublesub');
+                            await context.executeSlashCommands(`/bg ${bgResult.cleanUrl}`);
+                        }
+                        resetGeneratingIndicator();
+                    });
+                }
+            } else {
+                toastr.success(`Decision: Illustrating scene (${item.reason || 'Action Moment'})`, 'Doublesub');
+                const combinedPos = [s.stylePrefix, item.prompt].filter(Boolean).join(', ');
+                const combinedNeg = [s.defaultNegative, item.negativePrompt].filter(Boolean).join(', ');
+
+                if (s.interactiveReview) {
+                    promptReviewModal(combinedPos, combinedNeg, item.aspectRatio, item, executeImagePipeline);
+                } else {
+                    enqueueTask(async () => {
+                        await executeImagePipeline(combinedPos, combinedNeg, item.aspectRatio, item);
+                    });
+                }
+            }
+        });
+
     } catch (e) {
         console.error('[Illustration Agent Error]', e);
         resetGeneratingIndicator();
