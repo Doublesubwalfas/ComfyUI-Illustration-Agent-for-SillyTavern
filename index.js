@@ -43,7 +43,7 @@ Respond ONLY with valid JSON in this exact schema:
 
 const defaultSettings = {
     enabled: true,
-    deliveryMode: 'attached',
+    deliveryMode: 'attached', // 'attached' (clean in-turn metadata) or 'separate' (/comment card)
     triggerMode: 'every',
     triggerInterval: 3,
     pipelinePhase: 'post',
@@ -64,7 +64,7 @@ const defaultSettings = {
     resBgW: 1344,
     resBgH: 768,
 
-    // ComfyUI
+    // ComfyUI Defaults
     comfySteps: 20,
     comfyCfg: 4.5,
     comfySampler: 'euler_ancestral',
@@ -142,8 +142,6 @@ async function persistChatToDisk() {
             await context.saveChatDebounced();
         } else if (typeof window.saveChat === 'function') {
             await window.saveChat();
-        } else if (typeof window.saveChatDebounced === 'function') {
-            await window.saveChatDebounced();
         }
     } catch (e) {
         console.warn('[Illustration Agent] Failed to save chat to disk', e);
@@ -167,7 +165,7 @@ function getEffectiveComfyUrl() {
     return url;
 }
 
-// Base64 converter for offline gallery storage
+// Convert image URL to Base64 (Immune to mixed content, network blocks, or local IP mismatches)
 async function convertUrlToBase64(imgUrl) {
     try {
         const res = await fetch(imgUrl);
@@ -254,10 +252,10 @@ function injectUI() {
                     <div class="ia-row">
                         <label for="ia_delivery_mode"><b>Roleplay Output Delivery:</b></label>
                         <select id="ia_delivery_mode" class="text_pole">
-                            <option value="attached">Append to Assistant Turn (Permanent & In-Context)</option>
-                            <option value="separate">Separate Message Card (Hidden from LLM Context)</option>
+                            <option value="attached">Attached to Assistant Turn (Zero Edit-Box Bloat)</option>
+                            <option value="separate">Separate Comment Card (Hidden from LLM Context)</option>
                         </select>
-                        <small style="opacity: 0.7;">Separate cards are excluded from the LLM prompt context to prevent context bloat.</small>
+                        <small style="opacity: 0.7;">Attached mode stores image in message metadata so editing text has zero base64 letters.</small>
                     </div>
 
                     <div class="ia-row">
@@ -292,7 +290,6 @@ function injectUI() {
                     <div class="ia-row">
                         <label for="ia_batch_count"><b>Images per generation (Batch):</b></label>
                         <input type="number" id="ia_batch_count" class="text_pole" min="1" max="4" value="1">
-                        <small style="opacity: 0.7;">If > 1, a picker modal will let you choose which image to insert into roleplay.</small>
                     </div>
 
                     <div class="ia-row">
@@ -424,7 +421,6 @@ function injectUI() {
                     <div class="ia-row">
                         <label><b>Agent Instructions & Schema:</b></label>
                         <textarea id="ia_unified_prompt" class="text_pole" rows="12" style="font-family: monospace; font-size: 0.8em;"></textarea>
-                        <small style="opacity: 0.7;">Defines decision rules, description formatting, and image tagging criteria in one place.</small>
                     </div>
                 </div>
 
@@ -862,9 +858,9 @@ ${lastMsg.mes}
                         isBackground: true
                     });
 
-                    if (bgResult && bgResult.cleanUrl) {
+                    if (bgResult && (bgResult.base64Url || bgResult.cleanUrl)) {
                         toastr.success(`Background updated: ${loc}`, 'Marinara');
-                        await context.executeSlashCommands(`/bg ${bgResult.cleanUrl}`);
+                        await context.executeSlashCommands(`/bg ${bgResult.base64Url || bgResult.cleanUrl}`);
                     }
                     resetGeneratingIndicator();
                 });
@@ -945,7 +941,7 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
         }
 
         if (generatedResults.length === 1) {
-            await deliverRoleplayImage(generatedResults[0].cleanUrl, metadata.description);
+            await deliverRoleplayImage(generatedResults[0].base64Url, metadata.description);
         } else if (generatedResults.length > 1) {
             showBatchCandidatePicker(generatedResults, metadata.description);
         }
@@ -958,9 +954,10 @@ function showBatchCandidatePicker(results, description) {
     const $grid = $('#ia_batch_grid').empty();
 
     results.forEach((item, idx) => {
+        const display = item.base64Url || item.cleanUrl;
         const $item = $(`
             <div class="ia-batch-item" title="Click to select Variation #${idx + 1}">
-                <img src="${item.cleanUrl}" />
+                <img src="${display}" />
                 <div style="padding: 6px; text-align: center; font-size: 0.85em; background: rgba(0, 0, 0, 0.4);">
                     <b>Variation #${idx + 1}</b>
                 </div>
@@ -968,9 +965,9 @@ function showBatchCandidatePicker(results, description) {
         `);
 
         $item.on('click', async () => {
-            await deliverRoleplayImage(item.cleanUrl, description);
+            await deliverRoleplayImage(item.base64Url, description);
             $('#ia_batch_picker_modal').fadeOut(150);
-            toastr.success(`Inserted Variation #${idx + 1}!`, 'Marinara');
+            toastr.success(`Selected Variation #${idx + 1}!`, 'Marinara');
         });
 
         $grid.append($item);
@@ -1004,8 +1001,40 @@ async function pollComfyResult(comfyUrl, promptId, maxAttempts = 75) {
     throw new Error('ComfyUI generation timed out.');
 }
 
-// Delivers and commits the image permanently to disk
-async function deliverRoleplayImage(cleanImageUrl, description) {
+// 7. Render and Deliver Images without Bloating Edit Box
+function renderAttachedImageInDOM(messageIndex, imgData) {
+    if (!imgData || !imgData.url) return;
+    const $mes = $(`#chat .mes[mesid="${messageIndex}"]`);
+    if (!$mes.length) return;
+
+    if ($mes.find('.ia-attached-image-container').length > 0) return;
+
+    const html = `
+        <div class="ia-attached-image-container" style="margin-top: 10px;">
+            <div class="ia-img-wrapper" style="position: relative; display: inline-block;">
+                <img src="${imgData.url}" alt="${imgData.description || 'Scene Art'}" style="max-width: 100%; border-radius: 8px; display: block;" />
+                <button type="button" class="ia-reroll-btn"><i class="fa-solid fa-rotate-right"></i> Reroll</button>
+            </div>
+            ${imgData.description ? `<div class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${imgData.description}</div>` : ''}
+        </div>
+    `;
+
+    $mes.find('.mes_text').append(html);
+}
+
+function renderAllAttachedImages() {
+    const context = SillyTavern.getContext();
+    if (!context || !context.chat) return;
+
+    context.chat.forEach((msg, idx) => {
+        if (msg && msg.extra && msg.extra.ia_image) {
+            renderAttachedImageInDOM(idx, msg.extra.ia_image);
+        }
+    });
+}
+
+// Safe Delivery: Never touches message.mes with base64 strings!
+async function deliverRoleplayImage(base64ImageUrl, description) {
     const context = SillyTavern.getContext();
     if (!context || !context.chat || context.chat.length === 0) return;
 
@@ -1014,34 +1043,14 @@ async function deliverRoleplayImage(cleanImageUrl, description) {
     const descText = description || 'Scene Illustration';
 
     if (delivery === 'separate') {
-        // Mode B: SEPARATE CARD (Hidden from LLM context, committed to disk)
-        const systemMessage = {
-            name: 'Scene Art',
-            is_user: false,
-            is_system: true,
-            send_date: new Date().toISOString(),
-            mes: `![${descText}](${cleanImageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`,
-            extra: {
-                is_system: true,
-                exclude_from_context: true
-            }
-        };
-
-        if (typeof context.addMessages === 'function') {
-            await context.addMessages([systemMessage]);
-        } else if (typeof context.addOneMessage === 'function') {
-            await context.addOneMessage(systemMessage);
-        } else {
-            context.chat.push(systemMessage);
-            await persistChatToDisk();
-            if (typeof context.printMessages === 'function') {
-                context.printMessages();
-            }
-        }
-        toastr.success('Illustration added as separate card (excluded from LLM context).', 'Marinara');
+        // Mode B: SEPARATE COMMENT CARD (Using native SillyTavern slash command)
+        // Hidden from LLM context automatically, never alters existing messages
+        const commentHtml = `![${descText}](${base64ImageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`;
+        await context.executeSlashCommands(`/comment ${commentHtml}`);
+        toastr.success('Illustration added as separate hidden card.', 'Marinara');
 
     } else {
-        // Mode A: APPEND TO CURRENT TURN (Synced with swipes and saved to disk)
+        // Mode A: ATTACHED VIA METADATA (Zero edit-box bloat!)
         let messageIndex = context.chat.length - 1;
         while (messageIndex >= 0 && context.chat[messageIndex].is_user) {
             messageIndex--;
@@ -1049,40 +1058,21 @@ async function deliverRoleplayImage(cleanImageUrl, description) {
         if (messageIndex < 0) messageIndex = context.chat.length - 1;
 
         const targetMsg = context.chat[messageIndex];
-        const imageMarkdown = `\n\n![[Scene Description: ${descText}]](${cleanImageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`;
+        
+        // Store image inside extra metadata (NOT inside mes, keeping edit box clean)
+        targetMsg.extra = targetMsg.extra || {};
+        targetMsg.extra.ia_image = {
+            url: base64ImageUrl,
+            description: descText,
+            timestamp: Date.now()
+        };
 
-        if (!targetMsg.mes.includes(cleanImageUrl)) {
-            // 1. Update active message string
-            targetMsg.mes += imageMarkdown;
+        // Render dynamically in the chat bubble
+        renderAttachedImageInDOM(messageIndex, targetMsg.extra.ia_image);
 
-            // 2. CRUCIAL: Synchronize with the current swipe so reloads don't revert it!
-            if (Array.isArray(targetMsg.swipes) && targetMsg.swipes.length > 0) {
-                const swipeIdx = targetMsg.swipe_id !== undefined ? targetMsg.swipe_id : (targetMsg.swipes.length - 1);
-                if (targetMsg.swipes[swipeIdx] && !targetMsg.swipes[swipeIdx].includes(cleanImageUrl)) {
-                    targetMsg.swipes[swipeIdx] += imageMarkdown;
-                }
-            }
-
-            // 3. Persist the modified chat directly to disk
-            await persistChatToDisk();
-
-            // 4. Update the UI
-            if (typeof context.updateMessage === 'function') {
-                context.updateMessage(messageIndex, targetMsg);
-            }
-
-            // Direct DOM update guarantee
-            const $mesElement = $(`#chat .mes[mesid="${messageIndex}"] .mes_text, .mes_text`).last();
-            if ($mesElement.length && !$mesElement.find(`img[src="${cleanImageUrl}"]`).length) {
-                $mesElement.append(`
-                    <div class="ia-img-wrapper" style="margin-top: 10px;">
-                        <img src="${cleanImageUrl}" alt="${descText}" title="${descText}" />
-                        <span class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</span>
-                        <button type="button" class="ia-reroll-btn"><i class="fa-solid fa-rotate-right"></i> Reroll</button>
-                    </div>
-                `);
-            }
-        }
+        // Commit to disk so it survives refresh/chat switches
+        await persistChatToDisk();
+        toastr.success('Illustration attached cleanly to message.', 'Marinara');
     }
 }
 
@@ -1170,7 +1160,7 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
     }
 }
 
-// 7. Gallery System
+// 8. Gallery System
 function recordImage(entry) {
     loadStorage();
     imageGalleryDb.unshift(entry);
@@ -1260,7 +1250,7 @@ function renderGalleryContent(filterChar = null, filterType = null) {
 
         $card.find('.ia-set-bg-btn').on('click', async (e) => {
             e.stopPropagation();
-            const bgTarget = r.cleanUrl || r.url;
+            const bgTarget = r.url || r.cleanUrl;
             if (bgTarget) {
                 await SillyTavern.getContext().executeSlashCommands(`/bg ${bgTarget}`);
                 toastr.success(`Set wallpaper: ${r.location || 'Scene'}`, 'Marinara');
@@ -1269,8 +1259,7 @@ function renderGalleryContent(filterChar = null, filterType = null) {
 
         $card.find('.ia-insert-roleplay-btn').on('click', async (e) => {
             e.stopPropagation();
-            await deliverRoleplayImage(r.cleanUrl || r.url, r.description);
-            toastr.success('Delivered photo & description into chat!', 'Marinara');
+            await deliverRoleplayImage(r.url || r.cleanUrl, r.description);
             closeGalleryWindow();
         });
 
@@ -1278,7 +1267,7 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     });
 }
 
-// 8. In-Chat Reroll Buttons
+// 9. In-Chat Reroll Buttons
 function attachInChatMessageButtons() {
     $('.mes_text img').each(function () {
         const $img = $(this);
@@ -1296,7 +1285,7 @@ function attachInChatMessageButtons() {
     });
 }
 
-// 9. SillyTavern Lifecycle Hookup
+// 10. Lifecycle Registration
 jQuery(async () => {
     injectUI();
     loadSettings();
@@ -1314,6 +1303,7 @@ jQuery(async () => {
         lastHandledMessageId = msgId;
 
         attachInChatMessageButtons();
+        renderAllAttachedImages();
 
         const s = context.extensionSettings[MODULE_NAME];
         if (!s || !s.enabled) return;
@@ -1325,7 +1315,6 @@ jQuery(async () => {
     }
 
     if (eventSource && events) {
-        // Character message rendered (Assistant turn complete)
         const charRenderEvt = events.CHARACTER_MESSAGE_RENDERED || 'character_message_rendered';
         eventSource.on(charRenderEvt, (msgId) => {
             handleAssistantTurnFinished(msgId);
@@ -1342,13 +1331,21 @@ jQuery(async () => {
             handleAssistantTurnFinished(null);
         });
 
-        // Chat switched / reloaded: re-attach reroll buttons
+        // Chat switched / reloaded: re-render attached images from metadata
         const chatChangedEvt = events.CHAT_CHANGED || 'chat_changed';
         eventSource.on(chatChangedEvt, () => {
-            setTimeout(attachInChatMessageButtons, 500);
+            setTimeout(() => {
+                attachInChatMessageButtons();
+                renderAllAttachedImages();
+            }, 300);
         });
     }
 
-    setInterval(attachInChatMessageButtons, 2500);
-    console.log('[Illustration Agent] Unified Pipeline & Persistent Chat Ready.');
+    // Keep attached images rendered and reroll buttons active
+    setInterval(() => {
+        renderAllAttachedImages();
+        attachInChatMessageButtons();
+    }, 2000);
+
+    console.log('[Illustration Agent] Metadata-Attached & Slash-Comment Architecture Active.');
 });
