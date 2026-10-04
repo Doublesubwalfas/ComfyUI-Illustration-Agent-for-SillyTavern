@@ -25,7 +25,7 @@ Prompt rules: describe composition, lighting, mood, environment, and every visib
 
 const defaultSettings = {
     enabled: false,
-    pipelinePhase: 'post', // 'pre', 'parallel', 'post'
+    pipelinePhase: 'post',
     interactiveReview: false,
     batchCount: 1,
     lookback: 3,
@@ -33,6 +33,13 @@ const defaultSettings = {
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, blurry, jpeg artifacts',
     marinaraPrompt: defaultMarinaraPrompt,
     
+    // Sampler default overrides
+    comfySteps: 20,
+    comfyCfg: 4.5,
+    comfySampler: 'euler_ancestral',
+    comfyScheduler: 'normal',
+    comfyDenoise: 1.0,
+
     // LLM Settings
     llmProvider: 'current',
     customLlmUrl: 'https://api.openai.com/v1',
@@ -40,20 +47,9 @@ const defaultSettings = {
     customLlmModel: 'gpt-4o-mini',
 
     // Image Backend
-    imageBackend: 'sillytavern',
+    imageBackend: 'comfyui_direct',
     comfyUrl: 'http://127.0.0.1:8188',
-    comfyPosNode: '6',
-    comfyNegNode: '7',
-    comfySeedNode: '3',
-    comfyWorkflow: `{
-  "3": { "inputs": { "seed": 0, "steps": 25, "cfg": 7, "sampler_name": "euler_ancestral", "scheduler": "normal", "denoise": 1, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0] }, "class_type": "KSampler" },
-  "4": { "inputs": { "ckpt_name": "v1-5-pruned-emaonly.safetensors" }, "class_type": "CheckpointLoaderSimple" },
-  "5": { "inputs": { "width": 832, "height": 1216, "batch_size": 1 }, "class_type": "EmptyLatentImage" },
-  "6": { "inputs": { "text": "", "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
-  "7": { "inputs": { "text": "", "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
-  "8": { "inputs": { "samples": ["3", 0], "vae": ["4", 2] }, "class_type": "VAEDecode" },
-  "9": { "inputs": { "filename_prefix": "ST_Illustrator", "images": ["8", 0] }, "class_type": "SaveImage" }
-}`
+    comfyWorkflow: ''
 };
 
 let imageGalleryDb = [];
@@ -76,6 +72,35 @@ function saveStorage() {
     }
 }
 
+// Live scanner to highlight macros in real time
+function inspectWorkflowMacros() {
+    const raw = $('#ia_comfy_workflow').val() || '';
+    const macros = [
+        { name: '%prompt%', req: true },
+        { name: '%negative_prompt%', req: false },
+        { name: '%seed%', req: false },
+        { name: '%steps%', req: false },
+        { name: '%cfg%', req: false },
+        { name: '%sampler%', req: false },
+        { name: '%scheduler%', req: false },
+        { name: '%denoise%', req: false },
+        { name: '%width%', req: false },
+        { name: '%height%', req: false }
+    ];
+
+    const $status = $('#ia_macro_detector').empty();
+    macros.forEach(m => {
+        const found = raw.includes(m.name);
+        const color = found ? '#2ecc71' : (m.req ? '#e74c3c' : '#7f8c8d');
+        const icon = found ? '✓' : (m.req ? '✗ Required' : '○ Optional');
+        $status.append(`
+            <span style="font-size: 0.75em; padding: 2px 6px; border-radius: 4px; border: 1px solid ${color}; color: ${color}; margin-right: 4px; margin-bottom: 4px; display: inline-block;">
+                ${m.name}: ${icon}
+            </span>
+        `);
+    });
+}
+
 // 1. Inject UI Drawer
 function injectUI() {
     if ($('#ia_main_container').length > 0) return;
@@ -83,7 +108,6 @@ function injectUI() {
     const html = `
     <div id="ia_main_container" class="illustration-agent-settings" style="margin-bottom: 12px;">
         <div class="inline-drawer">
-            <!-- Handled natively by SillyTavern's inline-drawer-toggle -->
             <div id="ia_drawer_toggle" class="inline-drawer-toggle inline-drawer-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 6px 10px;">
                 <b><i class="fa-solid fa-palette" style="margin-right: 6px; color: #ff7675;"></i>Marinara Illustration Agent</b>
                 <div id="ia_drawer_icon" class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
@@ -163,33 +187,46 @@ function injectUI() {
                     <div class="ia-row">
                         <label for="ia_img_backend"><b>Generator Engine:</b></label>
                         <select id="ia_img_backend" class="text_pole">
-                            <option value="sillytavern">SillyTavern Native (Uses /imagine & Active Config)</option>
                             <option value="comfyui_direct">ComfyUI Direct (Editable Workflow JSON)</option>
+                            <option value="sillytavern">SillyTavern Native (Uses /imagine & Active Config)</option>
                         </select>
                     </div>
 
-                    <div id="ia_comfy_fields" style="display: none;">
+                    <div id="ia_comfy_fields">
                         <div class="ia-row">
                             <label><b>ComfyUI Host URL:</b></label>
                             <input type="text" id="ia_comfy_url" class="text_pole" placeholder="http://127.0.0.1:8188">
                         </div>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px;">
+
+                        <!-- Sampler default values for macros -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px;">
                             <div>
-                                <label><small>Positive Node ID</small></label>
-                                <input type="text" id="ia_comfy_pos_node" class="text_pole" value="6">
+                                <label><small>Steps (%steps%)</small></label>
+                                <input type="number" id="ia_comfy_steps" class="text_pole" value="20">
                             </div>
                             <div>
-                                <label><small>Negative Node ID</small></label>
-                                <input type="text" id="ia_comfy_neg_node" class="text_pole" value="7">
+                                <label><small>CFG Scale (%cfg%)</small></label>
+                                <input type="number" step="0.1" id="ia_comfy_cfg" class="text_pole" value="4.5">
                             </div>
                             <div>
-                                <label><small>Seed Node ID</small></label>
-                                <input type="text" id="ia_comfy_seed_node" class="text_pole" value="3">
+                                <label><small>Sampler (%sampler%)</small></label>
+                                <input type="text" id="ia_comfy_sampler" class="text_pole" value="euler_ancestral">
+                            </div>
+                            <div>
+                                <label><small>Scheduler (%scheduler%)</small></label>
+                                <input type="text" id="ia_comfy_scheduler" class="text_pole" value="normal">
                             </div>
                         </div>
-                        <div class="ia-row" style="margin-top: 6px;">
+
+                        <div class="ia-row">
                             <label><b>ComfyUI API Workflow (JSON):</b></label>
-                            <textarea id="ia_comfy_workflow" class="text_pole" rows="6" style="font-family: monospace; font-size: 0.8em;"></textarea>
+                            <textarea id="ia_comfy_workflow" class="text_pole" rows="8" style="font-family: monospace; font-size: 0.8em;" placeholder="Paste API format JSON here..."></textarea>
+                        </div>
+                        
+                        <!-- Macro status indicator -->
+                        <div style="margin-top: 4px;">
+                            <label style="font-size: 0.8em; opacity: 0.8;"><b>Macro Detection Status:</b></label>
+                            <div id="ia_macro_detector" style="margin-top: 4px;"></div>
                         </div>
                     </div>
                 </div>
@@ -268,9 +305,7 @@ function injectUI() {
     const container = $('#extensions_settings').length ? $('#extensions_settings') : $('#extensions_settings2');
     container.append(html);
 
-    // Stop inside clicks from bubbling up to any drawer containers
     $('#ia_drawer_content').on('click', (e) => e.stopPropagation());
-
     $('#ia_open_gallery_btn').on('click', (e) => { e.stopPropagation(); openGallery(); });
     $('#ia_gallery_close_btn').on('click', () => $('#ia_gallery_modal').fadeOut(150));
     $('#ia_close_review, #ia_rev_cancel').on('click', () => $('#ia_review_modal').fadeOut(150));
@@ -291,6 +326,11 @@ function loadSettings() {
     $('#ia_default_negative').val(s.defaultNegative);
     $('#ia_marinara_prompt').val(s.marinaraPrompt);
 
+    $('#ia_comfy_steps').val(s.comfySteps || 20);
+    $('#ia_comfy_cfg').val(s.comfyCfg || 4.5);
+    $('#ia_comfy_sampler').val(s.comfySampler || 'euler_ancestral');
+    $('#ia_comfy_scheduler').val(s.comfyScheduler || 'normal');
+
     $('#ia_llm_provider').val(s.llmProvider);
     $('#ia_custom_llm_url').val(s.customLlmUrl);
     $('#ia_custom_llm_key').val(s.customLlmKey);
@@ -298,12 +338,10 @@ function loadSettings() {
 
     $('#ia_img_backend').val(s.imageBackend);
     $('#ia_comfy_url').val(s.comfyUrl);
-    $('#ia_comfy_pos_node').val(s.comfyPosNode);
-    $('#ia_comfy_neg_node').val(s.comfyNegNode);
-    $('#ia_comfy_seed_node').val(s.comfySeedNode);
     $('#ia_comfy_workflow').val(s.comfyWorkflow);
 
     toggleConditionalFields();
+    inspectWorkflowMacros();
 }
 
 function toggleConditionalFields() {
@@ -326,6 +364,11 @@ function bindUI() {
     $('#ia_default_negative').on('input', function () { s.defaultNegative = $(this).val(); save(); });
     $('#ia_marinara_prompt').on('input', function () { s.marinaraPrompt = $(this).val(); save(); });
 
+    $('#ia_comfy_steps').on('change', function () { s.comfySteps = parseInt($(this).val()) || 20; save(); });
+    $('#ia_comfy_cfg').on('change', function () { s.comfyCfg = parseFloat($(this).val()) || 4.5; save(); });
+    $('#ia_comfy_sampler').on('input', function () { s.comfySampler = $(this).val(); save(); });
+    $('#ia_comfy_scheduler').on('input', function () { s.comfyScheduler = $(this).val(); save(); });
+
     $('#ia_llm_provider').on('change', function () { s.llmProvider = $(this).val(); toggleConditionalFields(); save(); });
     $('#ia_custom_llm_url').on('input', function () { s.customLlmUrl = $(this).val(); save(); });
     $('#ia_custom_llm_key').on('input', function () { s.customLlmKey = $(this).val(); save(); });
@@ -333,10 +376,12 @@ function bindUI() {
 
     $('#ia_img_backend').on('change', function () { s.imageBackend = $(this).val(); toggleConditionalFields(); save(); });
     $('#ia_comfy_url').on('input', function () { s.comfyUrl = $(this).val(); save(); });
-    $('#ia_comfy_pos_node').on('input', function () { s.comfyPosNode = $(this).val(); save(); });
-    $('#ia_comfy_neg_node').on('input', function () { s.comfyNegNode = $(this).val(); save(); });
-    $('#ia_comfy_seed_node').on('input', function () { s.comfySeedNode = $(this).val(); save(); });
-    $('#ia_comfy_workflow').on('input', function () { s.comfyWorkflow = $(this).val(); save(); });
+
+    $('#ia_comfy_workflow').on('input', function () {
+        s.comfyWorkflow = $(this).val();
+        inspectWorkflowMacros();
+        save();
+    });
 
     $('#ia_manual_eval_btn').on('click', (e) => { e.stopPropagation(); runEvaluation(true); });
     $('#ia_gallery_flat_toggle').on('change', renderGalleryContent);
@@ -466,10 +511,13 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
 async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
     const s = SillyTavern.getContext().extensionSettings[MODULE_NAME];
     try {
-        // 1. Calculate resolution based on LLM aspect ratio choice
+        if (!s.comfyWorkflow || !s.comfyWorkflow.trim()) {
+            throw new Error('ComfyUI API Workflow JSON is empty. Paste your workflow in settings.');
+        }
+
+        // 1. Calculate resolution from aspect ratio
         let width = 832;
         let height = 1216; // default portrait
-
         if (aspectRatio === 'landscape') {
             width = 1216;
             height = 832;
@@ -479,39 +527,44 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
         }
 
         const randomSeed = Math.floor(Math.random() * 1000000000000);
-        let workflow;
+        const steps = s.comfySteps || 20;
+        const cfg = s.comfyCfg || 4.5;
+        const sampler = s.comfySampler || 'euler_ancestral';
+        const scheduler = s.comfyScheduler || 'normal';
+        const denoise = 1.0;
 
-        // 2. Check if the user used %macros% in their workflow
         let rawStr = s.comfyWorkflow;
-        const hasMacros = rawStr.includes('%prompt%') || rawStr.includes('%positive%') || rawStr.includes('%seed%');
 
-        if (hasMacros) {
-            // Safely escape strings for valid JSON insertion
-            const safePositive = JSON.stringify(positive).slice(1, -1);
-            const safeNegative = JSON.stringify(negative).slice(1, -1);
+        // Escape text safely for valid JSON insertion
+        const safePositive = JSON.stringify(positive).slice(1, -1);
+        const safeNegative = JSON.stringify(negative).slice(1, -1);
 
-            rawStr = rawStr
-                .replaceAll('%prompt%', safePositive)
-                .replaceAll('%positive%', safePositive)
-                .replaceAll('%negative_prompt%', safeNegative)
-                .replaceAll('%negative%', safeNegative)
-                .replaceAll('"%seed%"', randomSeed)
-                .replaceAll('%seed%', randomSeed)
-                .replaceAll('"%width%"', width)
-                .replaceAll('%width%', width)
-                .replaceAll('"%height%"', height)
-                .replaceAll('%height%', height);
+        // Replace string macros
+        rawStr = rawStr
+            .replaceAll('%prompt%', safePositive)
+            .replaceAll('%positive%', safePositive)
+            .replaceAll('%negative_prompt%', safeNegative)
+            .replaceAll('%negative%', safeNegative)
+            .replaceAll('%sampler%', sampler)
+            .replaceAll('%scheduler%', scheduler);
 
-            workflow = JSON.parse(rawStr);
-        } else {
-            // Fallback: Use manual Node ID configuration if no macros were typed
-            workflow = JSON.parse(s.comfyWorkflow);
-            if (workflow[s.comfyPosNode]) workflow[s.comfyPosNode].inputs.text = positive;
-            if (workflow[s.comfyNegNode]) workflow[s.comfyNegNode].inputs.text = negative;
-            if (workflow[s.comfySeedNode]) workflow[s.comfySeedNode].inputs.seed = randomSeed;
-        }
+        // Replace numeric macros (both quoted and unquoted representations)
+        rawStr = rawStr
+            .replaceAll('"%seed%"', randomSeed)
+            .replaceAll('%seed%', randomSeed)
+            .replaceAll('"%steps%"', steps)
+            .replaceAll('%steps%', steps)
+            .replaceAll('"%cfg%"', cfg)
+            .replaceAll('%cfg%', cfg)
+            .replaceAll('"%denoise%"', denoise)
+            .replaceAll('%denoise%', denoise)
+            .replaceAll('"%width%"', width)
+            .replaceAll('%width%', width)
+            .replaceAll('"%height%"', height)
+            .replaceAll('%height%', height);
 
-        // 3. Dispatch to ComfyUI /prompt endpoint
+        const workflow = JSON.parse(rawStr);
+
         const resp = await fetch(`${s.comfyUrl.replace(/\/+$/, '')}/prompt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -526,7 +579,6 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
         const data = await resp.json();
         toastr.info(`ComfyUI Prompt Queued (ID: ${data.prompt_id})`, 'Marinara');
 
-        // Record generation metadata
         recordImage({
             id: Date.now() + Math.random().toString(36).substr(2, 4),
             character: SillyTavern.getContext().characters?.[SillyTavern.getContext().characterId]?.name || 'Unknown',
