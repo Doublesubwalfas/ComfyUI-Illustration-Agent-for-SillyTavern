@@ -1,12 +1,17 @@
+/* Container & Drawer */
+.illustration-agent-settings {
+    font-family: inherit;
+}
+
 .ia-section {
     margin-bottom: 12px;
     padding-bottom: 8px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 .ia-section-title {
-    font-weight: bold;
-    font-size: 0.95em;
+    font-weight: 600;
+    font-size: 0.9em;
     margin-bottom: 6px;
     color: var(--SmartThemeBodyColor, #e0e0e0);
     display: flex;
@@ -18,7 +23,7 @@
     margin-bottom: 8px;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
 }
 
 .ia-row-inline {
@@ -26,72 +31,99 @@
     align-items: center;
     justify-content: space-between;
     margin-bottom: 8px;
+    flex-wrap: wrap;
+    gap: 8px;
 }
 
-.ia-helper {
-    font-size: 0.8em;
-    opacity: 0.7;
-}
-
-/* Chat Image Reroll Floating Action */
-.ia-img-wrapper {
-    position: relative;
-    display: inline-block;
-    margin-top: 8px;
-    border-radius: 8px;
-    overflow: hidden;
-}
-
-.ia-img-wrapper img {
-    max-width: 100%;
-    border-radius: 8px;
-    display: block;
-}
-
-.ia-reroll-btn {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    background: rgba(0, 0, 0, 0.75);
+/* Floating Action Bubble (Minimized Gallery) */
+#ia_gallery_bubble {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #ff7675, #d63031);
     color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    padding: 6px 10px;
-    border-radius: 20px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.3em;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
     cursor: pointer;
-    font-size: 0.85em;
-    backdrop-filter: blur(4px);
-    transition: background 0.2s ease;
+    z-index: 99998;
+    transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    user-select: none;
 }
 
-.ia-reroll-btn:hover {
-    background: rgba(255, 100, 100, 0.85);
+#ia_gallery_bubble:hover {
+    transform: scale(1.1);
 }
 
-/* Gallery Modal Styles */
+#ia_gallery_bubble_badge {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    background: #2d3436;
+    color: #fff;
+    font-size: 0.55em;
+    font-weight: bold;
+    padding: 2px 6px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.3);
+}
+
+/* Floating Window Gallery */
 #ia_gallery_modal {
     position: fixed;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
     width: 85vw;
-    height: 85vh;
+    max-width: 1100px;
+    height: 80vh;
+    max-height: 800px;
     background: var(--SmartThemeBlurTintColor, #1e1e24);
-    border: 1px solid rgba(255, 255, 255, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: 12px;
     z-index: 99999;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.85);
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
 }
 
 .ia-gallery-header {
-    padding: 12px 18px;
-    background: rgba(0, 0, 0, 0.3);
+    padding: 10px 16px;
+    background: rgba(0, 0, 0, 0.35);
     display: flex;
     justify-content: space-between;
     align-items: center;
     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.ia-gallery-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.ia-win-btn {
+    background: transparent;
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    font-size: 1em;
+    padding: 4px 8px;
+    border-radius: 4px;
+    opacity: 0.8;
+}
+
+.ia-win-btn:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.1);
 }
 
 .ia-gallery-body {
@@ -101,7 +133,7 @@
 }
 
 .ia-gallery-sidebar {
-    width: 250px;
+    width: 210px;
     border-right: 1px solid rgba(255, 255, 255, 0.1);
     overflow-y: auto;
     padding: 10px;
@@ -111,52 +143,138 @@
 .ia-gallery-grid {
     flex: 1;
     overflow-y: auto;
-    padding: 15px;
+    padding: 14px;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
     gap: 12px;
     align-content: start;
 }
 
+/* Gallery Card Design */
 .ia-card {
     background: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 8px;
     overflow: hidden;
-    cursor: pointer;
-    transition: transform 0.15s ease;
+    display: flex;
+    flex-direction: column;
+    transition: transform 0.15s ease, border-color 0.15s ease;
 }
 
 .ia-card:hover {
-    transform: scale(1.02);
-    border-color: rgba(255, 255, 255, 0.4);
+    transform: translateY(-2px);
+    border-color: rgba(255, 255, 255, 0.3);
 }
 
 .ia-card img {
     width: 100%;
-    height: 180px;
+    height: 160px;
     object-fit: cover;
     display: block;
+    cursor: pointer;
 }
 
 .ia-card-meta {
-    padding: 6px 10px;
-    font-size: 0.78em;
-    opacity: 0.8;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
 }
 
-/* Prompt Review Modal */
-#ia_review_modal {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 500px;
-    max-width: 90vw;
-    background: var(--SmartThemeBlurTintColor, #202028);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 10px;
-    z-index: 100000;
-    padding: 16px;
-    box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+.ia-desc-text {
+    font-size: 0.82em;
+    line-height: 1.25em;
+    color: var(--SmartThemeBodyColor, #ddd);
+    font-style: italic;
+    background: rgba(0, 0, 0, 0.2);
+    padding: 4px 6px;
+    border-radius: 4px;
+    margin-top: 4px;
+}
+
+.ia-card-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.ia-card-btn {
+    flex: 1;
+    font-size: 0.72em;
+    padding: 4px 6px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #fff;
+    cursor: pointer;
+    text-align: center;
+}
+
+.ia-card-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* Mobile Responsive Optimization (< 768px) */
+@media (max-width: 768px) {
+    #ia_gallery_modal {
+        width: 100vw !important;
+        height: 100vh !important;
+        max-width: 100vw !important;
+        max-height: 100vh !important;
+        top: 0 !important;
+        left: 0 !important;
+        transform: none !important;
+        border-radius: 0 !important;
+        border: none !important;
+    }
+
+    .ia-gallery-body {
+        flex-direction: column;
+    }
+
+    .ia-gallery-sidebar {
+        width: 100%;
+        max-height: 48px;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        overflow-x: auto;
+        overflow-y: hidden;
+        white-space: nowrap;
+        border-right: none;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 4px 8px;
+        gap: 6px;
+    }
+
+    .ia-gallery-sidebar .ia-section-title {
+        display: none;
+    }
+
+    .ia-nav-filter, .ia-nav-char {
+        display: inline-flex !important;
+        align-items: center;
+        padding: 4px 10px !important;
+        margin-bottom: 0 !important;
+        font-size: 0.85em;
+        flex-shrink: 0;
+    }
+
+    .ia-gallery-grid {
+        grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+        gap: 8px;
+        padding: 8px;
+    }
+
+    .ia-card img {
+        height: 130px;
+    }
+
+    #ia_gallery_bubble {
+        bottom: 16px;
+        right: 16px;
+        width: 46px;
+        height: 46px;
+    }
 }

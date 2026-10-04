@@ -7,7 +7,7 @@ Set \`shouldGenerate\` to true if the latest assistant response contains at leas
 
 If no picture is taken and the current scene is purely conversational or visually static, set \`shouldGenerate\` to false and keep the prompt empty.
 
-Independently decide whether the active Roleplay background should change. Set \`generateBackground\` to true only when an <illustrator_background_generation enabled="true"> block is present or the latest scene enters a meaningfully different reusable location or setting. Always provide a concise "location" name (e.g. "Kuu's bedroom", "snowy forest", "tavern counter"). Keep \`generateBackground\` false when the location is unchanged, or only mood, lighting, time, or camera framing changed.
+Independently decide whether the active Roleplay background should change. Set \`generateBackground\` to true only when the latest scene enters a meaningfully different reusable location or setting. Always provide a concise "location" name (e.g. "Kuu's bedroom", "snowy forest", "tavern counter"). Keep \`generateBackground\` false when the location is unchanged, or only mood, lighting, time, or camera framing changed.
 
 Return valid JSON only:
 {
@@ -15,17 +15,20 @@ Return valid JSON only:
   "generateBackground": boolean,
   "location": "concise name of location or room",
   "reason": "why generate or why not",
-  "prompt": "detailed prompt if shouldGenerate is true",
+  "description": "natural 1-2 sentence description of what the photo or moment actually shows in plain English without tags, for character recognition (e.g. 'A selfie taken by Kuu smiling in her bedroom wearing a knitted sweater')",
+  "prompt": "detailed prompt tags if shouldGenerate is true",
   "negativePrompt": "what to avoid",
   "style": "visual style",
   "aspectRatio": "landscape|portrait|square",
   "characters": ["visible character name"]
 }
 
-Prompt rules: describe composition, lighting, mood, environment, and every visible character/persona directly. For each visible character/persona, include body build, clothing/outfit, hair, face, distinguishing features, and other appearance details from context. Put all visible names in characters. Include no UI, watermark, logo, signature, captions, speech bubbles, subtitles, manga SFX, or meta-instructions.`;
+Prompt rules: describe composition, lighting, mood, environment, and every visible character directly. Include body build, clothing/outfit, hair, face, and distinguishing features. Put all visible names in characters. Include no UI, watermark, logo, signature, captions, speech bubbles, subtitles, manga SFX, or meta-instructions.`;
 
 const defaultSettings = {
-    enabled: false,
+    enabled: true,
+    triggerMode: 'every', // 'every' or 'interval'
+    triggerInterval: 3,
     pipelinePhase: 'post',
     interactiveReview: false,
     batchCount: 1,
@@ -64,8 +67,9 @@ const defaultSettings = {
 
 let imageGalleryDb = [];
 let isEvaluating = false;
+let messageTurnCounter = 0;
 
-// Strict Sequential Queue Worker
+// Strict Sequential FIFO Task Queue
 const taskQueue = [];
 let isQueueRunning = false;
 
@@ -95,14 +99,20 @@ function loadStorage() {
     } catch {
         imageGalleryDb = [];
     }
+    updateGalleryBubbleBadge();
 }
 
 function saveStorage() {
     try {
         localStorage.setItem('ia_gallery_records', JSON.stringify(imageGalleryDb));
     } catch (e) {
-        console.warn('[Illustration Agent] Storage error', e);
+        console.warn('[Illustration Agent] Storage quota error', e);
     }
+    updateGalleryBubbleBadge();
+}
+
+function updateGalleryBubbleBadge() {
+    $('#ia_gallery_bubble_badge').text(imageGalleryDb.length);
 }
 
 function inspectWorkflowMacros() {
@@ -133,7 +143,7 @@ function inspectWorkflowMacros() {
     });
 }
 
-// 1. Inject UI Drawer
+// 1. Inject UI Elements
 function injectUI() {
     if ($('#ia_main_container').length > 0) return;
 
@@ -146,7 +156,7 @@ function injectUI() {
             </div>
             
             <div id="ia_drawer_content" class="inline-drawer-content" style="display: none; padding: 12px;">
-                <!-- General Section -->
+                <!-- Core Pipeline Settings -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-sliders"></i> Core Pipeline Settings</div>
                     
@@ -155,9 +165,23 @@ function injectUI() {
                             <input type="checkbox" id="ia_enabled">
                             <span><b>Enable Autonomous Illustrator</b></span>
                         </label>
-                        <button type="button" id="ia_open_gallery_btn" class="menu_button" style="padding: 3px 8px;">
-                            <i class="fa-solid fa-images"></i> Gallery
+                        <button type="button" id="ia_open_gallery_btn" class="menu_button" style="padding: 3px 10px;">
+                            <i class="fa-solid fa-images"></i> Floating Gallery
                         </button>
+                    </div>
+
+                    <div class="ia-row">
+                        <label for="ia_trigger_mode"><b>Evaluation Frequency:</b></label>
+                        <select id="ia_trigger_mode" class="text_pole">
+                            <option value="every">Evaluate Every Assistant Message</option>
+                            <option value="interval">Evaluate Once Every X Messages</option>
+                        </select>
+                    </div>
+
+                    <div id="ia_interval_row" class="ia-row" style="display: none;">
+                        <label for="ia_trigger_interval"><b>Message Interval (X turns):</b></label>
+                        <input type="number" id="ia_trigger_interval" class="text_pole" min="2" max="20" value="3">
+                        <small style="opacity: 0.7;">The agent will only consider generating an illustration once every X messages.</small>
                     </div>
 
                     <div class="ia-row">
@@ -327,8 +351,12 @@ function injectUI() {
             <div id="ia_close_review" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
         </div>
         <div class="ia-row">
+            <label><b>Description (for Character Memory):</b></label>
+            <input type="text" id="ia_rev_desc" class="text_pole">
+        </div>
+        <div class="ia-row">
             <label><b>Positive Prompt:</b></label>
-            <textarea id="ia_rev_positive" class="text_pole" rows="4"></textarea>
+            <textarea id="ia_rev_positive" class="text_pole" rows="3"></textarea>
         </div>
         <div class="ia-row">
             <label><b>Negative Prompt:</b></label>
@@ -348,16 +376,23 @@ function injectUI() {
         </div>
     </div>
 
-    <!-- Gallery Modal Container -->
+    <!-- Floating Minimized Bubble -->
+    <div id="ia_gallery_bubble" title="Open Illustration Gallery">
+        <i class="fa-solid fa-camera-retro"></i>
+        <div id="ia_gallery_bubble_badge">0</div>
+    </div>
+
+    <!-- Floating Window Gallery -->
     <div id="ia_gallery_modal" style="display: none;">
         <div class="ia-gallery-header">
-            <b><i class="fa-solid fa-images"></i> Illustration Agent Gallery</b>
-            <div style="display: flex; gap: 12px; align-items: center;">
-                <label class="checkbox_label">
+            <b><i class="fa-solid fa-images" style="color: #ff7675; margin-right: 6px;"></i>Illustration Agent Gallery</b>
+            <div class="ia-gallery-controls">
+                <label class="checkbox_label" style="font-size: 0.85em; margin-right: 6px;">
                     <input type="checkbox" id="ia_gallery_flat_toggle">
-                    <span>Flat View (Sorted by Date)</span>
+                    <span>Flat View</span>
                 </label>
-                <button type="button" id="ia_gallery_close_btn" class="menu_button"><i class="fa-solid fa-xmark"></i> Close</button>
+                <button type="button" id="ia_win_min_btn" class="ia-win-btn" title="Minimize to Floating Bubble"><i class="fa-solid fa-minus"></i></button>
+                <button type="button" id="ia_win_close_btn" class="ia-win-btn" title="Close"><i class="fa-solid fa-xmark"></i></button>
             </div>
         </div>
         <div class="ia-gallery-body">
@@ -371,9 +406,31 @@ function injectUI() {
     container.append(html);
 
     $('#ia_drawer_content').on('click', (e) => e.stopPropagation());
-    $('#ia_open_gallery_btn').on('click', (e) => { e.stopPropagation(); openGallery(); });
-    $('#ia_gallery_close_btn').on('click', () => $('#ia_gallery_modal').fadeOut(150));
+    
+    // Gallery Window & Bubble Handlers
+    $('#ia_open_gallery_btn').on('click', (e) => { e.stopPropagation(); openGalleryWindow(); });
+    $('#ia_gallery_bubble').on('click', openGalleryWindow);
+    $('#ia_win_min_btn').on('click', minimizeGalleryWindow);
+    $('#ia_win_close_btn').on('click', closeGalleryWindow);
     $('#ia_close_review, #ia_rev_cancel').on('click', () => $('#ia_review_modal').fadeOut(150));
+}
+
+function openGalleryWindow() {
+    $('#ia_gallery_bubble').fadeOut(150);
+    renderGalleryNav();
+    renderGalleryContent();
+    $('#ia_gallery_modal').fadeIn(200);
+}
+
+function minimizeGalleryWindow() {
+    $('#ia_gallery_modal').fadeOut(150, () => {
+        $('#ia_gallery_bubble').fadeIn(200);
+    });
+}
+
+function closeGalleryWindow() {
+    $('#ia_gallery_modal').fadeOut(150);
+    $('#ia_gallery_bubble').fadeOut(150);
 }
 
 // 2. Settings Binding
@@ -383,6 +440,8 @@ function loadSettings() {
     const s = context.extensionSettings[MODULE_NAME];
 
     $('#ia_enabled').prop('checked', !!s.enabled);
+    $('#ia_trigger_mode').val(s.triggerMode || 'every');
+    $('#ia_trigger_interval').val(s.triggerInterval || 3);
     $('#ia_pipeline_phase').val(s.pipelinePhase);
     $('#ia_interactive_review').prop('checked', !!s.interactiveReview);
     $('#ia_batch_count').val(s.batchCount);
@@ -422,6 +481,7 @@ function toggleConditionalFields() {
     const s = SillyTavern.getContext().extensionSettings[MODULE_NAME];
     $('#ia_custom_llm_fields').toggle(s.llmProvider === 'custom');
     $('#ia_comfy_fields').toggle(s.imageBackend === 'comfyui_direct');
+    $('#ia_interval_row').toggle(s.triggerMode === 'interval');
 }
 
 function bindUI() {
@@ -430,6 +490,8 @@ function bindUI() {
     const s = context.extensionSettings[MODULE_NAME];
 
     $('#ia_enabled').on('change', function () { s.enabled = $(this).is(':checked'); save(); });
+    $('#ia_trigger_mode').on('change', function () { s.triggerMode = $(this).val(); toggleConditionalFields(); save(); });
+    $('#ia_trigger_interval').on('change', function () { s.triggerInterval = Math.max(2, parseInt($(this).val()) || 3); save(); });
     $('#ia_pipeline_phase').on('change', function () { s.pipelinePhase = $(this).val(); save(); });
     $('#ia_interactive_review').on('change', function () { s.interactiveReview = $(this).is(':checked'); save(); });
     $('#ia_batch_count').on('change', function () { s.batchCount = Math.max(1, parseInt($(this).val()) || 1); save(); });
@@ -467,7 +529,7 @@ function bindUI() {
     });
 
     $('#ia_manual_eval_btn').on('click', (e) => { e.stopPropagation(); runEvaluation(true); });
-    $('#ia_gallery_flat_toggle').on('change', renderGalleryContent);
+    $('#ia_gallery_flat_toggle').on('change', () => renderGalleryContent());
 }
 
 // 3. Evaluator LLM Calls
@@ -494,7 +556,6 @@ async function queryAgentLLM(fullPrompt) {
     }
 }
 
-// Helper: Check if a matching background already exists in gallery
 function findExistingBackground(locationName) {
     if (!locationName) return null;
     const cleanQuery = locationName.toLowerCase().trim();
@@ -514,6 +575,15 @@ async function runEvaluation(force = false) {
 
     if (!context.chat || context.chat.length === 0) return;
     if (!force && !s.enabled) return;
+
+    // Check interval trigger if not forced
+    if (!force && s.triggerMode === 'interval') {
+        messageTurnCounter++;
+        if (messageTurnCounter % (s.triggerInterval || 3) !== 0) {
+            console.log(`[Illustration Agent] Interval skipping turn (${messageTurnCounter}/${s.triggerInterval})`);
+            return;
+        }
+    }
 
     isEvaluating = true;
     try {
@@ -555,10 +625,9 @@ ${lastMsg.mes}
             const matchedBg = findExistingBackground(loc);
 
             if (matchedBg) {
-                toastr.success(`Reusing saved background: "${matchedBg.location}"`, 'Marinara');
+                toastr.success(`Reusing background: "${matchedBg.location}"`, 'Marinara');
                 await context.executeSlashCommands(`/bg ${matchedBg.url}`);
             } else {
-                // Queue background generation (Runs strictly one-by-one)
                 enqueueTask(async () => {
                     toastr.info(`Queue: Generating background for "${loc}"...`, 'Marinara');
                     const bgPositive = [s.stylePrefix, result.prompt, 'scenery, landscape, interior, detailed background, no people, empty scene'].filter(Boolean).join(', ');
@@ -585,7 +654,6 @@ ${lastMsg.mes}
             if (s.interactiveReview) {
                 promptReviewModal(combinedPos, combinedNeg, result.aspectRatio, result);
             } else {
-                // Queue character generation (Runs strictly one-by-one)
                 enqueueTask(async () => {
                     await executeImagePipeline(combinedPos, combinedNeg, result.aspectRatio, result);
                 });
@@ -600,6 +668,7 @@ ${lastMsg.mes}
 }
 
 function promptReviewModal(pos, neg, ar, metadata) {
+    $('#ia_rev_desc').val(metadata.description || '');
     $('#ia_rev_positive').val(pos);
     $('#ia_rev_negative').val(neg);
     $('#ia_rev_ar').val(ar || 'portrait');
@@ -607,17 +676,18 @@ function promptReviewModal(pos, neg, ar, metadata) {
 
     $('#ia_rev_confirm').off('click').on('click', () => {
         $('#ia_review_modal').fadeOut(150);
+        metadata.description = $('#ia_rev_desc').val();
         enqueueTask(async () => {
             await executeImagePipeline($('#ia_rev_positive').val(), $('#ia_rev_negative').val(), $('#ia_rev_ar').val(), metadata);
         });
     });
 }
 
-// 5. Image Pipeline Execution with Resolution Selection
+// 5. Image Pipeline Execution
 async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
     const context = SillyTavern.getContext();
     const s = context.extensionSettings[MODULE_NAME];
-    toastr.success(`Illustrating scene: ${metadata.reason || 'Active Moment'}`, 'Marinara');
+    toastr.success(`Illustrating: ${metadata.description || metadata.reason || 'Active Moment'}`, 'Marinara');
 
     let width = s.resPortraitW;
     let height = s.resPortraitH;
@@ -636,7 +706,7 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
         if (s.imageBackend === 'comfyui_direct') {
             const imageUrl = await generateComfyImage(positive, negative, width, height, metadata);
             if (imageUrl) {
-                injectImageIntoChatMessage(imageUrl);
+                injectImageIntoChatMessage(imageUrl, metadata.description);
             }
         } else {
             await context.executeSlashCommands(`/imagine ${positive}`);
@@ -644,7 +714,6 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
     }
 }
 
-// Wait for ComfyUI to finish rendering and fetch the result image
 async function pollComfyResult(comfyUrl, promptId, maxAttempts = 75) {
     for (let i = 0; i < maxAttempts; i++) {
         await new Promise(r => setTimeout(r, 1500));
@@ -670,7 +739,7 @@ async function pollComfyResult(comfyUrl, promptId, maxAttempts = 75) {
     throw new Error('ComfyUI generation timed out.');
 }
 
-function injectImageIntoChatMessage(imageUrl) {
+function injectImageIntoChatMessage(imageUrl, description) {
     const context = SillyTavern.getContext();
     if (!context || !context.chat || context.chat.length === 0) return;
 
@@ -748,7 +817,7 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
         }
 
         const data = await resp.json();
-        toastr.info(`ComfyUI Job Running (ID: ${data.prompt_id})...`, 'Marinara');
+        toastr.info(`ComfyUI Job Queued (${data.prompt_id})...`, 'Marinara');
 
         const imageUrl = await pollComfyResult(comfyBaseUrl, data.prompt_id);
 
@@ -757,6 +826,7 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
             character: SillyTavern.getContext().characters?.[SillyTavern.getContext().characterId]?.name || 'Unknown',
             chatId: SillyTavern.getContext().chatId || 'Chat',
             date: new Date().toISOString(),
+            description: metadata.description || 'Illustration of the scene',
             positive,
             negative,
             aspectRatio: `${width}x${height}`,
@@ -778,12 +848,6 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
 function recordImage(entry) {
     imageGalleryDb.unshift(entry);
     saveStorage();
-}
-
-function openGallery() {
-    renderGalleryNav();
-    renderGalleryContent();
-    $('#ia_gallery_modal').fadeIn(150);
 }
 
 function renderGalleryNav() {
@@ -809,7 +873,7 @@ function renderGalleryNav() {
         `);
     });
 
-    $('.ia-nav-filter, .ia-nav-char').on('click', function() {
+    $('.ia-nav-filter, .ia-nav-char').off('click').on('click', function() {
         $('.ia-nav-filter, .ia-nav-char').css('background', 'transparent');
         $(this).css('background', 'rgba(255,255,255,0.15)');
 
@@ -833,40 +897,61 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     }
 
     if (records.length === 0) {
-        $grid.append(`<div style="opacity: 0.6; padding: 20px;">No illustrations recorded yet.</div>`);
+        $grid.append(`<div style="opacity: 0.6; padding: 20px; grid-column: 1 / -1; text-align: center;">No media recorded yet.</div>`);
         return;
     }
 
     records.forEach(r => {
         const imageMarkup = r.url
-            ? `<img src="${r.url}" style="width: 100%; height: 160px; object-fit: cover;" onerror="this.onerror=null; this.src=''; $(this).replaceWith('<div style=\\'height: 160px; display: flex; align-items: center; justify-content: center; background: #222;\\'><i class=\\'fa-solid fa-triangle-exclamation\\'></i> Image unreachable</div>');" />`
+            ? `<img src="${r.url}" loading="lazy" />`
             : `<div style="background: #111; height: 160px; display: flex; align-items: center; justify-content: center; font-size: 2em; color: #555;"><i class="fa-solid fa-image"></i></div>`;
 
         const tagBadge = r.type === 'background'
-            ? `<span style="background: #e67e22; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.75em;">BG: ${r.location || 'Scene'}</span>`
-            : `<span style="background: #3498db; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.75em;">Illustration</span>`;
+            ? `<span style="background: #e67e22; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.72em;">BG</span>`
+            : `<span style="background: #3498db; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.72em;">Photo</span>`;
 
         const $card = $(`
-            <div class="ia-card" title="Reason: ${r.reason || 'N/A'}" style="background: rgba(255,255,255,0.05); border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); position: relative;">
+            <div class="ia-card">
                 ${imageMarkup}
-                <div class="ia-card-meta" style="padding: 8px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                        <b>${r.character}</b>
+                <div class="ia-card-meta">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <b style="font-size: 0.88em;">${r.character}</b>
                         ${tagBadge}
                     </div>
-                    <small style="opacity: 0.7;">${r.aspectRatio || ''} - ${new Date(r.date).toLocaleDateString()}</small><br>
-                    <span style="opacity: 0.7; font-size: 0.85em;">${(r.positive || '').substring(0, 45)}...</span>
+                    <div class="ia-desc-text">${r.description || r.reason || 'No description recorded'}</div>
+                    <div class="ia-card-actions">
+                        ${r.type === 'background'
+                            ? `<button type="button" class="ia-card-btn ia-set-bg-btn"><i class="fa-solid fa-mountain-sun"></i> Set BG</button>`
+                            : `<button type="button" class="ia-card-btn ia-show-char-btn"><i class="fa-solid fa-comment-dots"></i> Show to Char</button>`
+                        }
+                    </div>
                 </div>
             </div>
         `);
 
-        // Clicking a background in gallery allows setting it immediately
-        if (r.type === 'background' && r.url) {
-            $card.css('cursor', 'pointer').on('click', async () => {
+        // Set BG Button
+        $card.find('.ia-set-bg-btn').on('click', async (e) => {
+            e.stopPropagation();
+            if (r.url) {
                 await SillyTavern.getContext().executeSlashCommands(`/bg ${r.url}`);
-                toastr.success(`Set active background to: ${r.location || 'Scene'}`, 'Marinara');
-            });
-        }
+                toastr.success(`Set active wallpaper: ${r.location || 'Scene'}`, 'Marinara');
+            }
+        });
+
+        // Show photo to character (Inserts in-character action so the LLM recognizes the photo)
+        $card.find('.ia-show-char-btn').on('click', async (e) => {
+            e.stopPropagation();
+            const desc = r.description || r.reason;
+            const context = SillyTavern.getContext();
+            const charName = context.characters?.[context.characterId]?.name || 'Character';
+
+            const userPrompt = `*shows ${charName} the photo: [Photo Details: ${desc}]*`;
+            
+            // Populate the SillyTavern chat textarea so user can inspect or send immediately
+            $('#send_textarea').val(userPrompt).trigger('input');
+            toastr.info(`Attached photo description to chat input!`, 'Marinara');
+            closeGalleryWindow();
+        });
 
         $grid.append($card);
     });
@@ -916,6 +1001,6 @@ jQuery(async () => {
         });
     }
 
-    setInterval(attachInChatMessageButtons, 2000);
-    console.log('[Illustration Agent] Marinara Architecture Engine Loaded.');
+    setInterval(attachInChatMessageButtons, 2500);
+    console.log('[Illustration Agent] Marinara Mobile & Floating Architecture Loaded.');
 });
