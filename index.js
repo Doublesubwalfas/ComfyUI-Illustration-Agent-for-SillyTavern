@@ -13,15 +13,26 @@ jQuery(async () => {
     const events = context.event_types || context.eventTypes || SillyTavern.event_types || SillyTavern.eventTypes || {};
 
     function handleAssistantTurnFinished(msgId) {
+        const s = getSettings();
+        if (!s || !s.enabled) return; // Master switch: If off, do absolutely nothing.
+
         if (msgId !== undefined && msgId !== null && lastHandledMessageId === msgId) {
             return;
         }
         lastHandledMessageId = msgId;
 
+        let hasImage = false;
+        let hasScene = false;
+
         // Clean any visible {image} or {scene} trigger tags from the current message
+        // but remember if they were present so Mode 2 knows to trigger accurately.
         if (context.chat && msgId !== undefined && context.chat[msgId]) {
             const currentMsg = context.chat[msgId];
             if (!currentMsg.is_user && currentMsg.mes) {
+                
+                hasImage = /\{\s*image\s*\}/i.test(currentMsg.mes);
+                hasScene = /\{\s*scene\s*\}/i.test(currentMsg.mes);
+
                 const cleaned = cleanTriggerTags(currentMsg.mes);
                 if (cleaned !== currentMsg.mes) {
                     currentMsg.mes = cleaned;
@@ -38,12 +49,9 @@ jQuery(async () => {
 
         attachInChatMessageButtons(runEvaluation);
 
-        const s = getSettings();
-        if (!s || !s.enabled) return;
-
         const phase = s.pipelinePhase || 'post';
         if (phase === 'post' || phase === 'parallel') {
-            runEvaluation(false);
+            runEvaluation(false, { hasImage, hasScene });
         }
     }
 
@@ -61,10 +69,17 @@ jQuery(async () => {
 
         const chatChangedEvt = events.CHAT_CHANGED || 'chat_changed';
         eventSource.on(chatChangedEvt, () => {
-            setTimeout(() => attachInChatMessageButtons(runEvaluation), 400);
+            setTimeout(() => {
+                const s = getSettings();
+                if (s && s.enabled) attachInChatMessageButtons(runEvaluation);
+            }, 400);
         });
     }
 
-    setInterval(() => attachInChatMessageButtons(runEvaluation), 2500);
-    console.log('[Illustration Agent] Mode Switcher, MultiGPU Workflow & Token Badges Ready.');
+    setInterval(() => {
+        const s = getSettings();
+        if (s && s.enabled) attachInChatMessageButtons(runEvaluation);
+    }, 2500);
+    
+    console.log('[Illustration Agent] Doublesub Illustration Agent Pipeline Ready.');
 });

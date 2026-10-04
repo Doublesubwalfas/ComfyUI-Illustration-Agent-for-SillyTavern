@@ -30,7 +30,7 @@ export async function deliverRoleplayImage(cleanImageUrl, description) {
     if (delivery === 'separate') {
         const commentTag = `![${descText}](${cleanImageUrl})\n*(${descText})*`;
         await context.executeSlashCommands(`/comment ${commentTag}`);
-        toastr.success('Illustration added as separate hidden card.', 'Marinara');
+        toastr.success('Illustration added as separate hidden card.', 'Doublesub');
     } else {
         let messageIndex = context.chat.length - 1;
         while (messageIndex >= 0 && context.chat[messageIndex].is_user) {
@@ -73,7 +73,7 @@ export async function deliverRoleplayImage(cleanImageUrl, description) {
                     </div>
                 `);
             }
-            toastr.success('Illustration attached cleanly to message.', 'Marinara');
+            toastr.success('Illustration attached cleanly to message.', 'Doublesub');
         }
     }
 }
@@ -89,7 +89,7 @@ export function attachInChatMessageButtons(triggerFn) {
 
         $btn.on('click', async (e) => {
             e.stopPropagation();
-            toastr.info('Rerolling illustration...', 'Marinara');
+            toastr.info('Rerolling illustration...', 'Doublesub');
             if (triggerFn) await triggerFn(true);
         });
     });

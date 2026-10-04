@@ -114,7 +114,7 @@ export function setupUI() {
     <div id="ia_main_container" class="illustration-agent-settings" style="margin-bottom: 12px;">
         <div class="inline-drawer">
             <div id="ia_drawer_toggle" class="inline-drawer-toggle inline-drawer-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 6px 10px;">
-                <b><i class="fa-solid fa-palette" style="margin-right: 6px; color: #ff7675;"></i>Marinara Illustration Agent</b>
+                <b><i class="fa-solid fa-palette" style="margin-right: 6px; color: #ff7675;"></i>Doublesub Illustration Agent</b>
                 <div id="ia_drawer_icon" class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             
@@ -130,9 +130,9 @@ export function setupUI() {
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-sliders"></i> Core Pipeline Settings</div>
                     <div class="ia-row-inline">
-                        <label class="checkbox_label" style="cursor: pointer;">
+                        <label class="checkbox_label" style="cursor: pointer;" title="Master switch: Disables the entire extension.">
                             <input type="checkbox" id="ia_enabled">
-                            <span><b>Enable Autonomous Illustrator</b></span>
+                            <span><b>Enable SillyTavern Illustration Agent</b> (Master Toggle)</span>
                         </label>
                         <button type="button" id="ia_open_gallery_btn" class="menu_button" style="padding: 3px 10px;"><i class="fa-solid fa-images"></i> Gallery Window</button>
                     </div>
@@ -140,11 +140,17 @@ export function setupUI() {
                     <div class="ia-row">
                         <label for="ia_agent_mode"><b>Agent Operation Mode:</b></label>
                         <select id="ia_agent_mode" class="text_pole">
-                            <option value="mode1">Mode 1: Full Autonomous Marinara (Photo + Scene Shifts + Backgrounds)</option>
-                            <option value="mode2">Mode 2: Tag-Triggered ({image} for Devices/Selfies, {scene} for Action)</option>
-                            <option value="mode3">Mode 3: Forced Interval (Bypasses Decision; Fires every X turns)</option>
+                            <option value="mode1">Mode 1: Autonomous Evaluator (Analyzes scene/actions automatically)</option>
+                            <option value="mode2">Mode 2: Tag-Triggered Only ({image} / {scene})</option>
+                            <option value="mode3">Mode 3: Interval-Forced (Triggers every X messages blindly)</option>
                         </select>
-                        <small id="ia_mode_hint" style="opacity: 0.7;"></small>
+                        <small id="ia_mode_hint" style="opacity: 0.7; margin-top: 2px;"></small>
+                    </div>
+                    
+                    <div class="ia-row" id="ia_mode2_instructions" style="display: none; margin-top: 8px; border-left: 2px solid #2ecc71; padding-left: 8px;">
+                        <label><b>Mode 2 System Prompt Injection (Editable):</b></label>
+                        <small style="opacity: 0.8; display: block; margin-bottom: 4px;">Copy this instruction into your character's System Prompt, Scenario, or Author's Note.</small>
+                        <textarea id="ia_mode2_injection" class="text_pole" rows="4" style="font-size: 0.85em; font-family: monospace;"></textarea>
                     </div>
 
                     <div class="ia-row">
@@ -156,14 +162,15 @@ export function setupUI() {
                     </div>
 
                     <div id="ia_interval_row" class="ia-row">
-                        <label for="ia_trigger_interval"><b>Message Interval (X turns):</b></label>
+                        <label for="ia_trigger_interval"><b>Trigger Interval (For Mode 3):</b></label>
                         <input type="number" id="ia_trigger_interval" class="text_pole" min="1" max="20" value="3">
+                        <small style="opacity: 0.7;">The AI will generate an image every X messages. Example: 3 means every 3rd message.</small>
                     </div>
 
                     <div class="ia-row">
                         <label for="ia_lookback"><b>Lookback History (Forced Context Window):</b></label>
                         <input type="number" id="ia_lookback" class="text_pole" min="1" max="10" value="3">
-                        <small style="opacity: 0.7;">The agent is strictly sandboxed to read only the last X messages.</small>
+                        <small style="opacity: 0.7;">The agent is strictly sandboxed to read only the last X messages for evaluation.</small>
                     </div>
 
                     <div class="ia-row">
@@ -419,10 +426,16 @@ export function setupUI() {
 function updateModeHint(mode) {
     const hints = {
         mode1: 'Evaluates recent turns for photo actions, physical shifts, and background transitions.',
-        mode2: 'Trigger-word driven: fires {image} (selfies/devices with description) and {scene} (action without background). Tags are auto-cleaned.',
+        mode2: 'Trigger-word driven: fires ONLY if {image} (selfies/devices) or {scene} (action without background) are present. Tags are auto-cleaned.',
         mode3: 'Bypasses the thinking step: unconditionally generates image prompts every X assistant messages.'
     };
     $('#ia_mode_hint').text(hints[mode] || '');
+    
+    if (mode === 'mode2') {
+        $('#ia_mode2_instructions').slideDown(150);
+    } else {
+        $('#ia_mode2_instructions').slideUp(150);
+    }
 }
 
 function bindSettingsEvents() {
@@ -433,12 +446,13 @@ function bindSettingsEvents() {
     refreshPresetDropdowns();
 
     $('#ia_enabled').prop('checked', !!s.enabled).on('change', function () { s.enabled = $(this).is(':checked'); saveSettings(); });
+    
     $('#ia_agent_mode').val(s.agentMode || 'mode1').on('change', function () {
         s.agentMode = $(this).val();
         updateModeHint(s.agentMode);
         // Switch schema preset automatically if on default modes
-        if (s.agentMode === 'mode1' && s.schemaPresets['Mode 1: Full Autonomous (Marinara)']) {
-            switchSchemaPreset('Mode 1: Full Autonomous (Marinara)');
+        if (s.agentMode === 'mode1' && s.schemaPresets['Mode 1: Full Autonomous (Doublesub)']) {
+            switchSchemaPreset('Mode 1: Full Autonomous (Doublesub)');
         } else if (s.agentMode === 'mode2' && s.schemaPresets['Mode 2: Tag Triggered ({image} & {scene})']) {
             switchSchemaPreset('Mode 2: Tag Triggered ({image} & {scene})');
         } else if (s.agentMode === 'mode3' && s.schemaPresets['Mode 3: Direct Prompt Generator']) {
@@ -447,6 +461,11 @@ function bindSettingsEvents() {
         saveSettings();
     });
     updateModeHint(s.agentMode || 'mode1');
+
+    $('#ia_mode2_injection').val(s.mode2InjectionText).on('input', function() {
+        s.mode2InjectionText = $(this).val();
+        saveSettings();
+    });
 
     $('#ia_delivery_mode').val(s.deliveryMode || 'attached').on('change', function () { s.deliveryMode = $(this).val(); saveSettings(); });
     $('#ia_trigger_interval').val(s.triggerInterval || 3).on('change', function () { s.triggerInterval = Math.max(1, parseInt($(this).val()) || 3); saveSettings(); });
@@ -501,7 +520,7 @@ function bindSettingsEvents() {
     $('#ia_manual_eval_btn').on('click', () => runEvaluation(true));
     $('#ia_open_gallery_btn').on('click', openGallery);
     $('#ia_win_min_btn').on('click', () => { $('#ia_gallery_modal').fadeOut(150); $('#ia_gallery_bubble').fadeIn(200); });
-    $('#ia_win_close_btn').on('click', () => { $('#ia_gallery_modal').fadeOut(150); });
+    $('#ia_win_close_btn').on('click', () => { $('#ia_gallery_modal').fadeOut(150); $('#ia_gallery_bubble').fadeIn(200); });
     $('#ia_close_review, #ia_rev_cancel').on('click', () => $('#ia_review_modal').fadeOut(150));
     $('#ia_close_batch_picker').on('click', () => $('#ia_batch_picker_modal').fadeOut(150));
     $('#ia_gallery_flat_toggle').on('change', () => renderGalleryContent());
@@ -795,7 +814,7 @@ function renderGalleryContent(filterChar = null, filterType = null) {
             e.stopPropagation();
             if (r.url) {
                 await SillyTavern.getContext().executeSlashCommands(`/bg ${r.url}`);
-                toastr.success(`Set wallpaper: ${r.location || 'Scene'}`, 'Marinara');
+                toastr.success(`Set wallpaper: ${r.location || 'Scene'}`, 'Doublesub');
             }
         });
 
@@ -803,6 +822,7 @@ function renderGalleryContent(filterChar = null, filterType = null) {
             e.stopPropagation();
             await deliverRoleplayImage(r.url, r.description);
             $('#ia_gallery_modal').fadeOut(150);
+            $('#ia_gallery_bubble').fadeIn(200); // Optional: bring bubble back after insert
         });
 
         $grid.append($card);

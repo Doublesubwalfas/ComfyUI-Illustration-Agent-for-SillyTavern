@@ -138,10 +138,12 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 85vw;
-    max-width: 1000px;
-    height: 80vh;
-    max-height: 750px;
+    width: 75vw;
+    max-width: 900px;
+    height: 75vh;
+    max-height: 700px;
+    min-width: 400px;
+    min-height: 300px;
     background: var(--SmartThemeBlurTintColor, #1e1e24);
     border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: 12px;
@@ -152,6 +154,7 @@
     overflow: hidden;
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
+    resize: both;
 }
 
 .ia-gallery-header {
@@ -376,6 +379,7 @@
         transform: none !important;
         border-radius: 0 !important;
         border: none !important;
+        resize: none !important;
     }
 
     .ia-gallery-body {

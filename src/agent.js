@@ -61,23 +61,23 @@ function findExistingBackground(locationName) {
     });
 }
 
-export async function runEvaluation(force = false) {
+export async function runEvaluation(force = false, tags = null) {
     if (isEvaluating) return;
     const context = SillyTavern.getContext();
     const s = getSettings();
 
     if (!context.chat || context.chat.length === 0) return;
-    if (!force && !s.enabled) return;
+    if (!s.enabled) return;
 
     // 1. FORCED Context Window: Strictly slice the exact lookback number
     const lookbackCount = Math.max(1, parseInt(s.lookback) || 3);
     const recentMessages = context.chat.slice(-lookbackCount);
     const lastMsg = recentMessages[recentMessages.length - 1];
 
-    // Clean trigger tags for evaluation text
+    // Detect tags (either passed proactively from index.js before cleaning, or fallback parse)
     const lastMsgTextRaw = lastMsg.mes || '';
-    const hasImageTag = /\{\s*image\s*\}/i.test(lastMsgTextRaw);
-    const hasSceneTag = /\{\s*scene\s*\}/i.test(lastMsgTextRaw);
+    const hasImageTag = tags ? tags.hasImage : /\{\s*image\s*\}/i.test(lastMsgTextRaw);
+    const hasSceneTag = tags ? tags.hasScene : /\{\s*scene\s*\}/i.test(lastMsgTextRaw);
 
     // MODE 2 EVALUATION GUARD
     if (!force && s.agentMode === 'mode2') {
@@ -123,7 +123,7 @@ ${cleanTriggerTags(lastMsg.mes)}
 
         $('#ia_gallery_bubble').addClass('is-generating');
         $('#ia_bubble_icon').removeClass('fa-camera-retro').addClass('fa-wand-magic-sparkles fa-spin');
-        toastr.info('Illustration Agent evaluating scene...', 'Marinara');
+        toastr.info('Illustration Agent evaluating scene...', 'Doublesub');
 
         const rawResponse = await queryAgentLLM(fullPrompt);
         if (!rawResponse) {
@@ -138,18 +138,6 @@ ${cleanTriggerTags(lastMsg.mes)}
         const result = JSON.parse(jsonMatch[0]);
 
         console.log('[Illustration Agent Decision]', result);
-
-        // Strip trigger words from chat text immediately
-        if (hasImageTag || hasSceneTag) {
-            lastMsg.mes = cleanTriggerTags(lastMsg.mes);
-            if (Array.isArray(lastMsg.swipes) && lastMsg.swipes.length > 0) {
-                const sIdx = lastMsg.swipe_id ?? (lastMsg.swipes.length - 1);
-                if (lastMsg.swipes[sIdx]) lastMsg.swipes[sIdx] = cleanTriggerTags(lastMsg.swipes[sIdx]);
-            }
-            if (typeof context.updateMessage === 'function') {
-                context.updateMessage(context.chat.length - 1, lastMsg);
-            }
-        }
 
         // Decision Handling based on Active Mode
         let shouldGen = force || (result.decision === 'yes');
@@ -176,11 +164,11 @@ ${cleanTriggerTags(lastMsg.mes)}
             const matchedBg = findExistingBackground(loc);
 
             if (matchedBg) {
-                toastr.success(`Decision: Reusing background "${matchedBg.location}"`, 'Marinara');
+                toastr.success(`Decision: Reusing background "${matchedBg.location}"`, 'Doublesub');
                 await context.executeSlashCommands(`/bg ${matchedBg.url}`);
                 resetGeneratingIndicator();
             } else {
-                toastr.info(`Decision: Generating background for "${loc}"`, 'Marinara');
+                toastr.info(`Decision: Generating background for "${loc}"`, 'Doublesub');
                 enqueueTask(async () => {
                     const bgPositive = [s.stylePrefix, result.prompt, 'scenery, landscape, interior, detailed background, no people, empty scene'].filter(Boolean).join(', ');
                     const bgNegative = [s.defaultNegative, 'character, person, people, human, face, girl, boy, 1girl'].filter(Boolean).join(', ');
@@ -191,14 +179,14 @@ ${cleanTriggerTags(lastMsg.mes)}
                     });
 
                     if (bgResult && bgResult.cleanUrl) {
-                        toastr.success(`Background updated: ${loc}`, 'Marinara');
+                        toastr.success(`Background updated: ${loc}`, 'Doublesub');
                         await context.executeSlashCommands(`/bg ${bgResult.cleanUrl}`);
                     }
                     resetGeneratingIndicator();
                 });
             }
         } else if (shouldGen) {
-            toastr.success(`Decision: Illustrating scene (${result.reason || 'Active Moment'})`, 'Marinara');
+            toastr.success(`Decision: Illustrating scene (${result.reason || 'Active Moment'})`, 'Doublesub');
             const combinedPos = [s.stylePrefix, result.prompt].filter(Boolean).join(', ');
             const combinedNeg = [s.defaultNegative, result.negativePrompt].filter(Boolean).join(', ');
 
@@ -210,13 +198,13 @@ ${cleanTriggerTags(lastMsg.mes)}
                 });
             }
         } else {
-            toastr.info(`Decision: Static scene, no illustration needed. (${result.reason || 'No shift'})`, 'Marinara');
+            toastr.info(`Decision: Static scene, no illustration needed. (${result.reason || 'No shift'})`, 'Doublesub');
             resetGeneratingIndicator();
         }
     } catch (e) {
         console.error('[Illustration Agent Error]', e);
         resetGeneratingIndicator();
-        toastr.error('Evaluation failed: ' + e.message, 'Marinara');
+        toastr.error('Evaluation failed: ' + e.message, 'Doublesub');
     } finally {
         isEvaluating = false;
     }

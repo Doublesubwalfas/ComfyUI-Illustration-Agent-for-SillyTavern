@@ -1,44 +1,17 @@
 <div class="illustration-agent-settings">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>Illustration Agent Settings</b>
+            <b>Doublesub Illustration Agent</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
             <div class="illustration-agent-row">
                 <label class="checkbox_label">
                     <input type="checkbox" id="ia_auto_enabled">
-                    <span><b>Enable Auto-Illustrator</b> (Triggers after AI responses)</span>
+                    <span><b>Enable SillyTavern Illustration Agent</b> (Master Switch)</span>
                 </label>
             </div>
-
-            <div class="illustration-agent-row">
-                <label for="ia_style_prefix"><b>Global Style / Quality Prefix:</b></label>
-                <input type="text" id="ia_style_prefix" class="text_pole" placeholder="masterpiece, best quality, cinematic lighting, 8k">
-            </div>
-
-            <div class="illustration-agent-row">
-                <label for="ia_negative_prompt"><b>Negative Prompt:</b></label>
-                <input type="text" id="ia_negative_prompt" class="text_pole" placeholder="lowres, bad anatomy, bad hands, text, error, blurry">
-            </div>
-
-            <div class="illustration-agent-row">
-                <label for="ia_sensitivity"><b>Context Lookback (Messages):</b></label>
-                <input type="number" id="ia_lookback" class="text_pole" min="1" max="10" value="3">
-                <small>How many recent messages the agent reads to evaluate the scene.</small>
-            </div>
-
-            <div class="illustration-agent-row">
-                <label for="ia_system_prompt"><b>Agent Instruction / Criteria:</b></label>
-                <textarea id="ia_system_prompt" class="text_pole" rows="6"></textarea>
-                <small>Instructions guiding when the LLM should flag <code>shouldGenerate: true</code>.</small>
-            </div>
-
-            <div class="illustration-agent-actions">
-                <button id="ia_force_generate_btn" class="menu_button">
-                    <i class="fa-solid fa-paintbrush"></i> Illustrate Current Scene Now
-                </button>
-            </div>
+            <!-- Dynamic UI injected via src/ui.js -->
         </div>
     </div>
 </div>

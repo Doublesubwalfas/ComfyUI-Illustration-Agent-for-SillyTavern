@@ -1,11 +1,11 @@
 # ComfyUI Illustration Agent for SillyTavern
 
-A SillyTavern extension replicating the autonomous **Illustrator Agent** from Marinara Engine.
+A SillyTavern extension replicating the autonomous **Doublesub Illustration Agent**.
 
 ## Features
 - **Autonomous Scene Detection**: Background LLM assesses dialogue and actions to trigger art only during pivotal or visual scene changes.
-- **Built-in ComfyUI Support**: Leverages SillyTavern's configured ComfyUI pipeline through `/imagine`.
-- **Custom Agent Prompts**: Customize scene sensitivity and art styles.
+- **Built-in ComfyUI Support**: Leverages SillyTavern's configured ComfyUI pipeline through `/imagine` or direct API integration.
+- **Custom Agent Prompts**: Customize scene sensitivity, art styles, and trigger word mechanics natively.
 
 ## Installation
 1. In SillyTavern, open the **Extensions** menu (Three Cubes icon).

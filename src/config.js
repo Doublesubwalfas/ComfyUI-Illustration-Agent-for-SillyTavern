@@ -1,7 +1,7 @@
 export const MODULE_NAME = 'comfyui-illustration-agent';
 
-// MODE 1: Full Autonomous Marinara Engine Schema
-export const schemaMode1 = `You are the autonomous Marinara Illustration Agent for a roleplay novel.
+// MODE 1: Full Autonomous Doublesub Engine Schema
+export const schemaMode1 = `You are the autonomous Doublesub Illustration Agent for a roleplay novel.
 Analyze the latest assistant turn (<assistant_response>) anchored to recent chat continuity.
 
 Execute these steps strictly:
@@ -171,6 +171,9 @@ export const defaultSettings = {
     stylePrefix: 'semi-realistic anime style, 2.5D anime, 3D anime, masterpiece, best quality, cinematic lighting',
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, blurry, jpeg artifacts',
 
+    // New editable text for mode 2 instructions
+    mode2InjectionText: 'System Note: When you take a photo, selfie, or use a device to capture a picture, include the exact text {image} anywhere in your response. When a major physical action, combat, or dramatic visual scene change occurs, include the exact text {scene} in your response.',
+
     // Resolutions
     resPortraitW: 832,
     resPortraitH: 1216,
@@ -196,11 +199,11 @@ export const defaultSettings = {
 
     // Preset Collections
     schemaPresets: {
-        'Mode 1: Full Autonomous (Marinara)': schemaMode1,
+        'Mode 1: Full Autonomous (Doublesub)': schemaMode1,
         'Mode 2: Tag Triggered ({image} & {scene})': schemaMode2,
         'Mode 3: Direct Prompt Generator': schemaMode3
     },
-    selectedSchemaPreset: 'Mode 1: Full Autonomous (Marinara)',
+    selectedSchemaPreset: 'Mode 1: Full Autonomous (Doublesub)',
 
     workflowPresets: {
         'Default MultiGPU GGUF (Anima + Qwen)': defaultComfyWorkflowJson

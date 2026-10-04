@@ -128,7 +128,7 @@ export async function generateComfyImage(positive, negative, width, height, meta
     }
 
     const data = await resp.json();
-    toastr.info(`ComfyUI Job Running (${data.prompt_id})...`, 'Marinara');
+    toastr.info(`ComfyUI Job Running (${data.prompt_id})...`, 'Doublesub');
 
     const comfyDirectUrl = await pollComfyResult(comfyBaseUrl, data.prompt_id);
     const imgResp = await fetch(comfyDirectUrl);
