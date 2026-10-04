@@ -7,12 +7,13 @@ Set \`shouldGenerate\` to true if the latest assistant response contains at leas
 
 If no picture is taken and the current scene is purely conversational or visually static, set \`shouldGenerate\` to false and keep the prompt empty.
 
-Independently decide whether the active Roleplay background should change. Set \`generateBackground\` to true only when an <illustrator_background_generation enabled="true"> block is present and the latest scene enters a meaningfully different reusable location or setting. Prefer tracker location changes when available; otherwise infer from recent context. A background may be generated alongside an illustration or while \`shouldGenerate\` is false. Keep \`generateBackground\` false when the block is absent, the location is unchanged, or only mood, lighting, time, or camera framing changed.
+Independently decide whether the active Roleplay background should change. Set \`generateBackground\` to true only when an <illustrator_background_generation enabled="true"> block is present or the latest scene enters a meaningfully different reusable location or setting. Always provide a concise "location" name (e.g. "Kuu's bedroom", "snowy forest", "tavern counter"). Keep \`generateBackground\` false when the location is unchanged, or only mood, lighting, time, or camera framing changed.
 
 Return valid JSON only:
 {
   "shouldGenerate": boolean,
   "generateBackground": boolean,
+  "location": "concise name of location or room",
   "reason": "why generate or why not",
   "prompt": "detailed prompt if shouldGenerate is true",
   "negativePrompt": "what to avoid",
@@ -21,7 +22,7 @@ Return valid JSON only:
   "characters": ["visible character name"]
 }
 
-Prompt rules: describe composition, lighting, mood, environment, and every visible character/persona directly. For each visible character/persona, include available body build (chubby, slim, muscular, etc.), clothing/outfit, hair, face, distinguishing features, and other appearance details from context. Do not invent missing traits. Put all visible names in characters. Include no UI, watermark, logo, signature, captions, speech bubbles, subtitles, manga SFX, or meta-instructions.`;
+Prompt rules: describe composition, lighting, mood, environment, and every visible character/persona directly. For each visible character/persona, include body build, clothing/outfit, hair, face, distinguishing features, and other appearance details from context. Put all visible names in characters. Include no UI, watermark, logo, signature, captions, speech bubbles, subtitles, manga SFX, or meta-instructions.`;
 
 const defaultSettings = {
     enabled: false,
@@ -33,16 +34,29 @@ const defaultSettings = {
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, blurry, jpeg artifacts',
     marinaraPrompt: defaultMarinaraPrompt,
     
+    // Resolution Configurations
+    resPortraitW: 832,
+    resPortraitH: 1216,
+    resLandscapeW: 1216,
+    resLandscapeH: 832,
+    resSquareW: 1024,
+    resSquareH: 1024,
+    resBgW: 1344,
+    resBgH: 768,
+
+    // ComfyUI Defaults
     comfySteps: 20,
     comfyCfg: 4.5,
     comfySampler: 'euler_ancestral',
     comfyScheduler: 'normal',
 
+    // LLM Config
     llmProvider: 'current',
     customLlmUrl: 'https://api.openai.com/v1',
     customLlmKey: '',
     customLlmModel: 'gpt-4o-mini',
 
+    // Backend
     imageBackend: 'comfyui_direct',
     comfyUrl: 'http://127.0.0.1:8188',
     comfyWorkflow: ''
@@ -50,6 +64,29 @@ const defaultSettings = {
 
 let imageGalleryDb = [];
 let isEvaluating = false;
+
+// Strict Sequential Queue Worker
+const taskQueue = [];
+let isQueueRunning = false;
+
+function enqueueTask(taskFn) {
+    taskQueue.push(taskFn);
+    processQueue();
+}
+
+async function processQueue() {
+    if (isQueueRunning) return;
+    isQueueRunning = true;
+    while (taskQueue.length > 0) {
+        const currentTask = taskQueue.shift();
+        try {
+            await currentTask();
+        } catch (e) {
+            console.error('[Illustration Agent Task Error]', e);
+        }
+    }
+    isQueueRunning = false;
+}
 
 function loadStorage() {
     try {
@@ -109,6 +146,7 @@ function injectUI() {
             </div>
             
             <div id="ia_drawer_content" class="inline-drawer-content" style="display: none; padding: 12px;">
+                <!-- General Section -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-sliders"></i> Core Pipeline Settings</div>
                     
@@ -149,6 +187,42 @@ function injectUI() {
                     </div>
                 </div>
 
+                <!-- Custom Resolution Config -->
+                <div class="ia-section">
+                    <div class="ia-section-title"><i class="fa-solid fa-crop-simple"></i> Resolution & Aspect Ratios (W × H)</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                        <div>
+                            <label><small>Portrait (Roleplay)</small></label>
+                            <div style="display: flex; gap: 4px;">
+                                <input type="number" id="ia_res_port_w" class="text_pole" placeholder="832">
+                                <input type="number" id="ia_res_port_h" class="text_pole" placeholder="1216">
+                            </div>
+                        </div>
+                        <div>
+                            <label><small>Landscape (Roleplay)</small></label>
+                            <div style="display: flex; gap: 4px;">
+                                <input type="number" id="ia_res_land_w" class="text_pole" placeholder="1216">
+                                <input type="number" id="ia_res_land_h" class="text_pole" placeholder="832">
+                            </div>
+                        </div>
+                        <div>
+                            <label><small>Square (Roleplay)</small></label>
+                            <div style="display: flex; gap: 4px;">
+                                <input type="number" id="ia_res_sq_w" class="text_pole" placeholder="1024">
+                                <input type="number" id="ia_res_sq_h" class="text_pole" placeholder="1024">
+                            </div>
+                        </div>
+                        <div>
+                            <label><small>Background Widescreen</small></label>
+                            <div style="display: flex; gap: 4px;">
+                                <input type="number" id="ia_res_bg_w" class="text_pole" placeholder="1344">
+                                <input type="number" id="ia_res_bg_h" class="text_pole" placeholder="768">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Evaluator LLM API -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-brain"></i> Agent Evaluator LLM</div>
                     <div class="ia-row">
@@ -174,6 +248,7 @@ function injectUI() {
                     </div>
                 </div>
 
+                <!-- Image Backend Selection -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-wand-magic-sparkles"></i> Image Generation Backend</div>
                     <div class="ia-row">
@@ -221,6 +296,7 @@ function injectUI() {
                     </div>
                 </div>
 
+                <!-- Marinara Prompting Rules -->
                 <div class="ia-section">
                     <div class="ia-section-title"><i class="fa-solid fa-file-code"></i> Marinara System Instructions & Macros</div>
                     <div class="ia-row">
@@ -315,6 +391,15 @@ function loadSettings() {
     $('#ia_default_negative').val(s.defaultNegative);
     $('#ia_marinara_prompt').val(s.marinaraPrompt);
 
+    $('#ia_res_port_w').val(s.resPortraitW || 832);
+    $('#ia_res_port_h').val(s.resPortraitH || 1216);
+    $('#ia_res_land_w').val(s.resLandscapeW || 1216);
+    $('#ia_res_land_h').val(s.resLandscapeH || 832);
+    $('#ia_res_sq_w').val(s.resSquareW || 1024);
+    $('#ia_res_sq_h').val(s.resSquareH || 1024);
+    $('#ia_res_bg_w').val(s.resBgW || 1344);
+    $('#ia_res_bg_h').val(s.resBgH || 768);
+
     $('#ia_comfy_steps').val(s.comfySteps || 20);
     $('#ia_comfy_cfg').val(s.comfyCfg || 4.5);
     $('#ia_comfy_sampler').val(s.comfySampler || 'euler_ancestral');
@@ -352,6 +437,15 @@ function bindUI() {
     $('#ia_style_prefix').on('input', function () { s.stylePrefix = $(this).val(); save(); });
     $('#ia_default_negative').on('input', function () { s.defaultNegative = $(this).val(); save(); });
     $('#ia_marinara_prompt').on('input', function () { s.marinaraPrompt = $(this).val(); save(); });
+
+    $('#ia_res_port_w').on('change', function () { s.resPortraitW = parseInt($(this).val()) || 832; save(); });
+    $('#ia_res_port_h').on('change', function () { s.resPortraitH = parseInt($(this).val()) || 1216; save(); });
+    $('#ia_res_land_w').on('change', function () { s.resLandscapeW = parseInt($(this).val()) || 1216; save(); });
+    $('#ia_res_land_h').on('change', function () { s.resLandscapeH = parseInt($(this).val()) || 832; save(); });
+    $('#ia_res_sq_w').on('change', function () { s.resSquareW = parseInt($(this).val()) || 1024; save(); });
+    $('#ia_res_sq_h').on('change', function () { s.resSquareH = parseInt($(this).val()) || 1024; save(); });
+    $('#ia_res_bg_w').on('change', function () { s.resBgW = parseInt($(this).val()) || 1344; save(); });
+    $('#ia_res_bg_h').on('change', function () { s.resBgH = parseInt($(this).val()) || 768; save(); });
 
     $('#ia_comfy_steps').on('change', function () { s.comfySteps = parseInt($(this).val()) || 20; save(); });
     $('#ia_comfy_cfg').on('change', function () { s.comfyCfg = parseFloat($(this).val()) || 4.5; save(); });
@@ -400,6 +494,18 @@ async function queryAgentLLM(fullPrompt) {
     }
 }
 
+// Helper: Check if a matching background already exists in gallery
+function findExistingBackground(locationName) {
+    if (!locationName) return null;
+    const cleanQuery = locationName.toLowerCase().trim();
+
+    return imageGalleryDb.find(item => {
+        if (item.type !== 'background' || !item.url) return false;
+        const loc = (item.location || '').toLowerCase();
+        return loc.includes(cleanQuery) || cleanQuery.includes(loc);
+    });
+}
+
 // 4. Main Evaluation Engine
 async function runEvaluation(force = false) {
     if (isEvaluating) return;
@@ -443,12 +549,35 @@ ${lastMsg.mes}
 
         console.log('[Illustration Agent Decision]', result);
 
+        // A. Handle Background Evaluation
         if (result.generateBackground) {
-            toastr.info(`Background update triggered: ${result.reason}`, 'Marinara');
-            const bgPrompt = [s.stylePrefix, result.prompt, 'scenery, landscape, empty scene, no people'].filter(Boolean).join(', ');
-            await context.executeSlashCommands(`/bg ${bgPrompt}`);
+            const loc = result.location || 'New Scene';
+            const matchedBg = findExistingBackground(loc);
+
+            if (matchedBg) {
+                toastr.success(`Reusing saved background: "${matchedBg.location}"`, 'Marinara');
+                await context.executeSlashCommands(`/bg ${matchedBg.url}`);
+            } else {
+                // Queue background generation (Runs strictly one-by-one)
+                enqueueTask(async () => {
+                    toastr.info(`Queue: Generating background for "${loc}"...`, 'Marinara');
+                    const bgPositive = [s.stylePrefix, result.prompt, 'scenery, landscape, interior, detailed background, no people, empty scene'].filter(Boolean).join(', ');
+                    const bgNegative = [s.defaultNegative, 'character, person, people, human, face, girl, boy, 1girl'].filter(Boolean).join(', ');
+
+                    const bgUrl = await generateComfyImage(bgPositive, bgNegative, s.resBgW, s.resBgH, {
+                        ...result,
+                        isBackground: true
+                    });
+
+                    if (bgUrl) {
+                        toastr.success(`Background updated: ${loc}`, 'Marinara');
+                        await context.executeSlashCommands(`/bg ${bgUrl}`);
+                    }
+                });
+            }
         }
 
+        // B. Handle Character / Roleplay Illustration
         if (force || result.shouldGenerate === true) {
             const combinedPos = [s.stylePrefix, result.prompt].filter(Boolean).join(', ');
             const combinedNeg = [s.defaultNegative, result.negativePrompt].filter(Boolean).join(', ');
@@ -456,7 +585,10 @@ ${lastMsg.mes}
             if (s.interactiveReview) {
                 promptReviewModal(combinedPos, combinedNeg, result.aspectRatio, result);
             } else {
-                executeImagePipeline(combinedPos, combinedNeg, result.aspectRatio, result);
+                // Queue character generation (Runs strictly one-by-one)
+                enqueueTask(async () => {
+                    await executeImagePipeline(combinedPos, combinedNeg, result.aspectRatio, result);
+                });
             }
         }
     } catch (e) {
@@ -475,21 +607,37 @@ function promptReviewModal(pos, neg, ar, metadata) {
 
     $('#ia_rev_confirm').off('click').on('click', () => {
         $('#ia_review_modal').fadeOut(150);
-        executeImagePipeline($('#ia_rev_positive').val(), $('#ia_rev_negative').val(), $('#ia_rev_ar').val(), metadata);
+        enqueueTask(async () => {
+            await executeImagePipeline($('#ia_rev_positive').val(), $('#ia_rev_negative').val(), $('#ia_rev_ar').val(), metadata);
+        });
     });
 }
 
-// 5. Image Pipeline Execution
+// 5. Image Pipeline Execution with Resolution Selection
 async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
     const context = SillyTavern.getContext();
     const s = context.extensionSettings[MODULE_NAME];
     toastr.success(`Illustrating scene: ${metadata.reason || 'Active Moment'}`, 'Marinara');
 
+    let width = s.resPortraitW;
+    let height = s.resPortraitH;
+
+    if (aspectRatio === 'landscape') {
+        width = s.resLandscapeW;
+        height = s.resLandscapeH;
+    } else if (aspectRatio === 'square') {
+        width = s.resSquareW;
+        height = s.resSquareH;
+    }
+
     const totalBatch = s.batchCount || 1;
 
     for (let i = 0; i < totalBatch; i++) {
         if (s.imageBackend === 'comfyui_direct') {
-            await executeComfyDirect(positive, negative, aspectRatio, metadata);
+            const imageUrl = await generateComfyImage(positive, negative, width, height, metadata);
+            if (imageUrl) {
+                injectImageIntoChatMessage(imageUrl);
+            }
         } else {
             await context.executeSlashCommands(`/imagine ${positive}`);
         }
@@ -497,9 +645,9 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
 }
 
 // Wait for ComfyUI to finish rendering and fetch the result image
-async function pollComfyResult(comfyUrl, promptId, maxAttempts = 60) {
+async function pollComfyResult(comfyUrl, promptId, maxAttempts = 75) {
     for (let i = 0; i < maxAttempts; i++) {
-        await new Promise(r => setTimeout(r, 1500)); // poll every 1.5 seconds
+        await new Promise(r => setTimeout(r, 1500));
 
         try {
             const resp = await fetch(`${comfyUrl}/history/${promptId}`);
@@ -508,7 +656,6 @@ async function pollComfyResult(comfyUrl, promptId, maxAttempts = 60) {
             const history = await resp.json();
             if (history && history[promptId] && history[promptId].outputs) {
                 const outputs = history[promptId].outputs;
-                // Search for SaveImage output node
                 for (const nodeId in outputs) {
                     if (outputs[nodeId].images && outputs[nodeId].images.length > 0) {
                         const imgInfo = outputs[nodeId].images[0];
@@ -520,29 +667,23 @@ async function pollComfyResult(comfyUrl, promptId, maxAttempts = 60) {
             console.warn('[Illustration Agent] Polling ComfyUI history...', e);
         }
     }
-    throw new Error('ComfyUI generation timed out after 90 seconds.');
+    throw new Error('ComfyUI generation timed out.');
 }
 
-// Injects the generated image directly into the active chat message
 function injectImageIntoChatMessage(imageUrl) {
     const context = SillyTavern.getContext();
     if (!context || !context.chat || context.chat.length === 0) return;
 
-    // Find the latest assistant message
     const messageIndex = context.chat.length - 1;
     const targetMsg = context.chat[messageIndex];
-
     const imageMarkdown = `\n\n![](${imageUrl})`;
-    
-    // Prevent duplicate appending if called repeatedly
+
     if (!targetMsg.mes.includes(imageUrl)) {
         targetMsg.mes += imageMarkdown;
-        
-        // Re-render the chat message inside SillyTavern
+
         if (typeof context.updateMessage === 'function') {
             context.updateMessage(messageIndex, targetMsg);
         } else {
-            // Native DOM fallback
             const $lastMes = $('.mes_text').last();
             if ($lastMes.length) {
                 $lastMes.append(`<div class="ia-img-wrapper" style="margin-top: 10px;"><img src="${imageUrl}" style="max-width: 100%; border-radius: 8px;" /></div>`);
@@ -552,23 +693,13 @@ function injectImageIntoChatMessage(imageUrl) {
     }
 }
 
-async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
+async function generateComfyImage(positive, negative, width, height, metadata) {
     const s = SillyTavern.getContext().extensionSettings[MODULE_NAME];
     const comfyBaseUrl = s.comfyUrl.replace(/\/+$/, '');
 
     try {
         if (!s.comfyWorkflow || !s.comfyWorkflow.trim()) {
-            throw new Error('ComfyUI API Workflow JSON is empty. Paste your workflow in settings.');
-        }
-
-        let width = 832;
-        let height = 1216;
-        if (aspectRatio === 'landscape') {
-            width = 1216;
-            height = 832;
-        } else if (aspectRatio === 'square') {
-            width = 1024;
-            height = 1024;
+            throw new Error('ComfyUI API Workflow JSON is empty.');
         }
 
         const randomSeed = Math.floor(Math.random() * 1000000000000);
@@ -605,7 +736,6 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
 
         const workflow = JSON.parse(rawStr);
 
-        // 1. Submit prompt to ComfyUI
         const resp = await fetch(`${comfyBaseUrl}/prompt`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -620,15 +750,8 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
         const data = await resp.json();
         toastr.info(`ComfyUI Job Running (ID: ${data.prompt_id})...`, 'Marinara');
 
-        // 2. Poll until ComfyUI finishes and returns the image URL
         const imageUrl = await pollComfyResult(comfyBaseUrl, data.prompt_id);
 
-        toastr.success('Illustration ready!', 'Marinara');
-
-        // 3. Inject directly into the chat message
-        injectImageIntoChatMessage(imageUrl);
-
-        // 4. Save to gallery with full URL
         recordImage({
             id: Date.now() + Math.random().toString(36).substr(2, 4),
             character: SillyTavern.getContext().characters?.[SillyTavern.getContext().characterId]?.name || 'Unknown',
@@ -636,14 +759,18 @@ async function executeComfyDirect(positive, negative, aspectRatio, metadata) {
             date: new Date().toISOString(),
             positive,
             negative,
-            aspectRatio,
+            aspectRatio: `${width}x${height}`,
+            type: metadata.isBackground ? 'background' : 'illustration',
+            location: metadata.location || '',
             reason: metadata.reason,
             url: imageUrl
         });
 
+        return imageUrl;
     } catch (e) {
         console.error('[ComfyUI Direct Error]', e);
         toastr.error(`ComfyUI execution failed: ${e.message}`, 'Marinara');
+        return null;
     }
 }
 
@@ -663,7 +790,17 @@ function renderGalleryNav() {
     const $nav = $('#ia_gallery_nav').empty();
     const characters = [...new Set(imageGalleryDb.map(x => x.character))];
 
-    $nav.append(`<div class="ia-section-title" style="padding: 4px 6px;">Characters</div>`);
+    $nav.append(`<div class="ia-section-title" style="padding: 4px 6px;">Filters</div>`);
+    $nav.append(`
+        <div class="ia-nav-filter" data-filter="all" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;">
+            <i class="fa-solid fa-layer-group"></i> All Media
+        </div>
+        <div class="ia-nav-filter" data-filter="background" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;">
+            <i class="fa-solid fa-mountain-sun"></i> Backgrounds
+        </div>
+    `);
+
+    $nav.append(`<div class="ia-section-title" style="padding: 4px 6px; margin-top: 10px;">Characters</div>`);
     characters.forEach(c => {
         $nav.append(`
             <div class="ia-nav-char" data-char="${c}" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;">
@@ -672,20 +809,27 @@ function renderGalleryNav() {
         `);
     });
 
-    $('.ia-nav-char').on('click', function() {
-        $('.ia-nav-char').css('background', 'transparent');
+    $('.ia-nav-filter, .ia-nav-char').on('click', function() {
+        $('.ia-nav-filter, .ia-nav-char').css('background', 'transparent');
         $(this).css('background', 'rgba(255,255,255,0.15)');
-        renderGalleryContent($(this).data('char'));
+
+        if ($(this).hasClass('ia-nav-filter')) {
+            renderGalleryContent(null, $(this).data('filter'));
+        } else {
+            renderGalleryContent($(this).data('char'), null);
+        }
     });
 }
 
-function renderGalleryContent(filterChar = null) {
+function renderGalleryContent(filterChar = null, filterType = null) {
     const $grid = $('#ia_gallery_content').empty();
     const isFlat = $('#ia_gallery_flat_toggle').is(':checked');
 
     let records = [...imageGalleryDb];
-    if (!isFlat && filterChar) {
-        records = records.filter(r => r.character === filterChar);
+
+    if (!isFlat) {
+        if (filterChar) records = records.filter(r => r.character === filterChar);
+        if (filterType === 'background') records = records.filter(r => r.type === 'background');
     }
 
     if (records.length === 0) {
@@ -698,15 +842,33 @@ function renderGalleryContent(filterChar = null) {
             ? `<img src="${r.url}" style="width: 100%; height: 160px; object-fit: cover;" onerror="this.onerror=null; this.src=''; $(this).replaceWith('<div style=\\'height: 160px; display: flex; align-items: center; justify-content: center; background: #222;\\'><i class=\\'fa-solid fa-triangle-exclamation\\'></i> Image unreachable</div>');" />`
             : `<div style="background: #111; height: 160px; display: flex; align-items: center; justify-content: center; font-size: 2em; color: #555;"><i class="fa-solid fa-image"></i></div>`;
 
-        $grid.append(`
-            <div class="ia-card" title="Reason: ${r.reason || 'N/A'}" style="background: rgba(255,255,255,0.05); border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1);">
+        const tagBadge = r.type === 'background'
+            ? `<span style="background: #e67e22; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.75em;">BG: ${r.location || 'Scene'}</span>`
+            : `<span style="background: #3498db; color: #fff; padding: 2px 5px; border-radius: 3px; font-size: 0.75em;">Illustration</span>`;
+
+        const $card = $(`
+            <div class="ia-card" title="Reason: ${r.reason || 'N/A'}" style="background: rgba(255,255,255,0.05); border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); position: relative;">
                 ${imageMarkup}
                 <div class="ia-card-meta" style="padding: 8px;">
-                    <b>${r.character}</b> - <small>${new Date(r.date).toLocaleDateString()}</small><br>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                        <b>${r.character}</b>
+                        ${tagBadge}
+                    </div>
+                    <small style="opacity: 0.7;">${r.aspectRatio || ''} - ${new Date(r.date).toLocaleDateString()}</small><br>
                     <span style="opacity: 0.7; font-size: 0.85em;">${(r.positive || '').substring(0, 45)}...</span>
                 </div>
             </div>
         `);
+
+        // Clicking a background in gallery allows setting it immediately
+        if (r.type === 'background' && r.url) {
+            $card.css('cursor', 'pointer').on('click', async () => {
+                await SillyTavern.getContext().executeSlashCommands(`/bg ${r.url}`);
+                toastr.success(`Set active background to: ${r.location || 'Scene'}`, 'Marinara');
+            });
+        }
+
+        $grid.append($card);
     });
 }
 
