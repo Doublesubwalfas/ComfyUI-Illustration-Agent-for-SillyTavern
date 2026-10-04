@@ -43,7 +43,7 @@ Respond ONLY with valid JSON in this exact schema:
 
 const defaultSettings = {
     enabled: true,
-    deliveryMode: 'attached', // 'attached' (to assistant message) or 'separate' (independent hidden card)
+    deliveryMode: 'attached',
     triggerMode: 'every',
     triggerInterval: 3,
     pipelinePhase: 'post',
@@ -130,6 +130,24 @@ function saveStorage() {
 
 function updateGalleryBubbleBadge() {
     $('#ia_gallery_bubble_badge').text(imageGalleryDb.length);
+}
+
+// Robust Chat Persistence Helper
+async function persistChatToDisk() {
+    const context = SillyTavern.getContext();
+    try {
+        if (typeof context.saveChat === 'function') {
+            await context.saveChat();
+        } else if (typeof context.saveChatDebounced === 'function') {
+            await context.saveChatDebounced();
+        } else if (typeof window.saveChat === 'function') {
+            await window.saveChat();
+        } else if (typeof window.saveChatDebounced === 'function') {
+            await window.saveChatDebounced();
+        }
+    } catch (e) {
+        console.warn('[Illustration Agent] Failed to save chat to disk', e);
+    }
 }
 
 // Smart IP Resolution for mobile
@@ -236,7 +254,7 @@ function injectUI() {
                     <div class="ia-row">
                         <label for="ia_delivery_mode"><b>Roleplay Output Delivery:</b></label>
                         <select id="ia_delivery_mode" class="text_pole">
-                            <option value="attached">Append to Assistant Turn (Clean Short Link)</option>
+                            <option value="attached">Append to Assistant Turn (Permanent & In-Context)</option>
                             <option value="separate">Separate Message Card (Hidden from LLM Context)</option>
                         </select>
                         <small style="opacity: 0.7;">Separate cards are excluded from the LLM prompt context to prevent context bloat.</small>
@@ -802,7 +820,6 @@ ${contextText}
 ${lastMsg.mes}
 </assistant_response>`;
 
-        // Activate Android Bubble visual indicator
         $('#ia_gallery_bubble').addClass('is-generating');
         $('#ia_bubble_icon').removeClass('fa-camera-retro').addClass('fa-wand-magic-sparkles fa-spin');
         
@@ -840,14 +857,14 @@ ${lastMsg.mes}
                     const bgPositive = [s.stylePrefix, result.prompt, 'scenery, landscape, interior, detailed background, no people, empty scene'].filter(Boolean).join(', ');
                     const bgNegative = [s.defaultNegative, 'character, person, people, human, face, girl, boy, 1girl'].filter(Boolean).join(', ');
 
-                    const bgUrl = await generateComfyImage(bgPositive, bgNegative, s.resBgW, s.resBgH, {
+                    const bgResult = await generateComfyImage(bgPositive, bgNegative, s.resBgW, s.resBgH, {
                         ...result,
                         isBackground: true
                     });
 
-                    if (bgUrl) {
+                    if (bgResult && bgResult.cleanUrl) {
                         toastr.success(`Background updated: ${loc}`, 'Marinara');
-                        await context.executeSlashCommands(`/bg ${bgUrl}`);
+                        await context.executeSlashCommands(`/bg ${bgResult.cleanUrl}`);
                     }
                     resetGeneratingIndicator();
                 });
@@ -928,7 +945,7 @@ async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
         }
 
         if (generatedResults.length === 1) {
-            deliverRoleplayImage(generatedResults[0].cleanUrl, metadata.description);
+            await deliverRoleplayImage(generatedResults[0].cleanUrl, metadata.description);
         } else if (generatedResults.length > 1) {
             showBatchCandidatePicker(generatedResults, metadata.description);
         }
@@ -950,8 +967,8 @@ function showBatchCandidatePicker(results, description) {
             </div>
         `);
 
-        $item.on('click', () => {
-            deliverRoleplayImage(item.cleanUrl, description);
+        $item.on('click', async () => {
+            await deliverRoleplayImage(item.cleanUrl, description);
             $('#ia_batch_picker_modal').fadeOut(150);
             toastr.success(`Inserted Variation #${idx + 1}!`, 'Marinara');
         });
@@ -987,8 +1004,8 @@ async function pollComfyResult(comfyUrl, promptId, maxAttempts = 75) {
     throw new Error('ComfyUI generation timed out.');
 }
 
-// Delivers the image either appended to the turn or as a separate hidden card
-function deliverRoleplayImage(cleanImageUrl, description) {
+// Delivers and commits the image permanently to disk
+async function deliverRoleplayImage(cleanImageUrl, description) {
     const context = SillyTavern.getContext();
     if (!context || !context.chat || context.chat.length === 0) return;
 
@@ -997,7 +1014,7 @@ function deliverRoleplayImage(cleanImageUrl, description) {
     const descText = description || 'Scene Illustration';
 
     if (delivery === 'separate') {
-        // Mode B: SEPARATE MESSAGE (Hidden from LLM prompt context)
+        // Mode B: SEPARATE CARD (Hidden from LLM context, committed to disk)
         const systemMessage = {
             name: 'Scene Art',
             is_user: false,
@@ -1006,21 +1023,25 @@ function deliverRoleplayImage(cleanImageUrl, description) {
             mes: `![${descText}](${cleanImageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`,
             extra: {
                 is_system: true,
-                exclude_from_context: true // Tells SillyTavern never to send this card to the LLM
+                exclude_from_context: true
             }
         };
 
-        if (typeof context.addOneMessage === 'function') {
-            context.addOneMessage(systemMessage);
+        if (typeof context.addMessages === 'function') {
+            await context.addMessages([systemMessage]);
+        } else if (typeof context.addOneMessage === 'function') {
+            await context.addOneMessage(systemMessage);
         } else {
             context.chat.push(systemMessage);
-            context.saveChatDebounced?.();
-            context.reloadCurrentChat?.();
+            await persistChatToDisk();
+            if (typeof context.printMessages === 'function') {
+                context.printMessages();
+            }
         }
         toastr.success('Illustration added as separate card (excluded from LLM context).', 'Marinara');
 
     } else {
-        // Mode A: APPEND TO CURRENT TURN (Short clean link, NO base64 letters in edit box)
+        // Mode A: APPEND TO CURRENT TURN (Synced with swipes and saved to disk)
         let messageIndex = context.chat.length - 1;
         while (messageIndex >= 0 && context.chat[messageIndex].is_user) {
             messageIndex--;
@@ -1028,21 +1049,29 @@ function deliverRoleplayImage(cleanImageUrl, description) {
         if (messageIndex < 0) messageIndex = context.chat.length - 1;
 
         const targetMsg = context.chat[messageIndex];
-        
-        // Lightweight markdown with the clean 60-character ComfyUI URL
         const imageMarkdown = `\n\n![[Scene Description: ${descText}]](${cleanImageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`;
 
         if (!targetMsg.mes.includes(cleanImageUrl)) {
+            // 1. Update active message string
             targetMsg.mes += imageMarkdown;
 
+            // 2. CRUCIAL: Synchronize with the current swipe so reloads don't revert it!
+            if (Array.isArray(targetMsg.swipes) && targetMsg.swipes.length > 0) {
+                const swipeIdx = targetMsg.swipe_id !== undefined ? targetMsg.swipe_id : (targetMsg.swipes.length - 1);
+                if (targetMsg.swipes[swipeIdx] && !targetMsg.swipes[swipeIdx].includes(cleanImageUrl)) {
+                    targetMsg.swipes[swipeIdx] += imageMarkdown;
+                }
+            }
+
+            // 3. Persist the modified chat directly to disk
+            await persistChatToDisk();
+
+            // 4. Update the UI
             if (typeof context.updateMessage === 'function') {
                 context.updateMessage(messageIndex, targetMsg);
             }
-            if (typeof context.saveChatDebounced === 'function') {
-                context.saveChatDebounced();
-            }
 
-            // Direct DOM insertion fallback
+            // Direct DOM update guarantee
             const $mesElement = $(`#chat .mes[mesid="${messageIndex}"] .mes_text, .mes_text`).last();
             if ($mesElement.length && !$mesElement.find(`img[src="${cleanImageUrl}"]`).length) {
                 $mesElement.append(`
@@ -1114,10 +1143,7 @@ async function generateComfyImage(positive, negative, width, height, metadata) {
         const data = await resp.json();
         toastr.info(`ComfyUI Running (${data.prompt_id})...`, 'Marinara');
 
-        // Short clean URL (~60 characters, no base64)
         const cleanUrl = await pollComfyResult(comfyBaseUrl, data.prompt_id);
-
-        // Convert only for the gallery database
         const base64Url = await convertUrlToBase64(cleanUrl);
 
         recordImage({
@@ -1243,7 +1269,7 @@ function renderGalleryContent(filterChar = null, filterType = null) {
 
         $card.find('.ia-insert-roleplay-btn').on('click', async (e) => {
             e.stopPropagation();
-            deliverRoleplayImage(r.cleanUrl || r.url, r.description);
+            await deliverRoleplayImage(r.cleanUrl || r.url, r.description);
             toastr.success('Delivered photo & description into chat!', 'Marinara');
             closeGalleryWindow();
         });
@@ -1299,6 +1325,7 @@ jQuery(async () => {
     }
 
     if (eventSource && events) {
+        // Character message rendered (Assistant turn complete)
         const charRenderEvt = events.CHARACTER_MESSAGE_RENDERED || 'character_message_rendered';
         eventSource.on(charRenderEvt, (msgId) => {
             handleAssistantTurnFinished(msgId);
@@ -1314,8 +1341,14 @@ jQuery(async () => {
         eventSource.on(genEndEvt, () => {
             handleAssistantTurnFinished(null);
         });
+
+        // Chat switched / reloaded: re-attach reroll buttons
+        const chatChangedEvt = events.CHAT_CHANGED || 'chat_changed';
+        eventSource.on(chatChangedEvt, () => {
+            setTimeout(attachInChatMessageButtons, 500);
+        });
     }
 
     setInterval(attachInChatMessageButtons, 2500);
-    console.log('[Illustration Agent] Unified Pipeline Ready.');
+    console.log('[Illustration Agent] Unified Pipeline & Persistent Chat Ready.');
 });
