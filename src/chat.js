@@ -1,9 +1,9 @@
 import { getSettings } from './config.js';
 
-// Regex cleaner: strips <image> and <scene> XML tags and their content from chat text
+// Regex cleaner: extremely aggressive strip for <image> and <scene> XML tags, including wrapping markdown
 export function cleanTriggerTags(text) {
     if (!text || typeof text !== 'string') return text;
-    return text.replace(/<(image|scene)>[\s\S]*?<\/\1>/gi, '').trim();
+    return text.replace(/[*_]*<(image|scene)>[\s\S]*?<\/\1>[*_]*/gi, '').trim();
 }
 
 export async function persistChat() {
@@ -19,7 +19,6 @@ export async function persistChat() {
     }
 }
 
-// Shows an image into the roleplay context as an active interaction from the User
 export async function showImageToCharacter(cleanImageUrl, description) {
     const context = SillyTavern.getContext();
     const displayUrl = cleanImageUrl.startsWith('ia_bg_') ? `/backgrounds/${cleanImageUrl}` : cleanImageUrl;
@@ -50,8 +49,6 @@ export async function deliverRoleplayImage(cleanImageUrl, description) {
         if (messageIndex < 0) messageIndex = context.chat.length - 1;
 
         const targetMsg = context.chat[messageIndex];
-
-        // Clean out any leftover XML tags
         targetMsg.mes = cleanTriggerTags(targetMsg.mes);
 
         const imageMarkdown = `\n\n![${descText}](${cleanImageUrl})\n*<small class="ia-img-caption"><i class="fa-solid fa-camera"></i> ${descText}</small>*`;

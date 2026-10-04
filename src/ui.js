@@ -1,11 +1,7 @@
 import {
     getSettings,
     saveSettings,
-    getGalleryDb,
-    schemaMode1,
-    schemaMode2,
-    schemaMode3,
-    defaultComfyWorkflowJson
+    getGalleryDb
 } from './config.js';
 import { getEffectiveComfyUrl } from './comfy.js';
 import { queryAgentLLM, runEvaluation } from './agent.js';
@@ -53,18 +49,16 @@ export function showBatchCandidatePicker(results, description, selectCallback) {
 }
 
 function updateMacroBadges() {
-    const s = getSettings();
     const schemaText = $('#ia_schema_editor').val() || '';
     const workflowText = $('#ia_comfy_workflow').val() || '';
 
     const schemaTokens = [
-        { name: 'decision', desc: 'Output JSON key for yes/no decision' },
-        { name: 'illustrations', desc: 'Output JSON Array for multi-gen tasks' },
-        { name: 'type', desc: 'Output JSON key for roleplay vs background' },
+        { name: 'decision', desc: 'Output JSON key for yes/no decision (Mode 1 only)' },
+        { name: 'background', desc: 'Output JSON key for background config (Mode 1 only)' },
+        { name: 'roleplay', desc: 'Output JSON key for roleplay config (Mode 1 only)' },
         { name: 'description', desc: 'Output JSON key for narrative vision memory' },
         { name: 'prompt', desc: 'Output JSON key for image generation prompt' },
         { name: 'negativePrompt', desc: 'Output JSON key for negative prompt tags' },
-        { name: 'location', desc: 'Output JSON key for background room/place name' },
         { name: '<assistant_response>', desc: 'Target anchor for the latest assistant message' }
     ];
 
@@ -165,7 +159,7 @@ export function setupUI() {
                         <small style="opacity: 0.7;">The AI will generate an image every X messages.</small>
                     </div>
 
-                    <div class="ia-row">
+                    <div class="ia-row" id="ia_lookback_row">
                         <label for="ia_lookback"><b>Lookback History (Forced Context Window):</b></label>
                         <input type="number" id="ia_lookback" class="text_pole" min="1" max="10" value="3">
                         <small style="opacity: 0.7;">The agent is strictly sandboxed to read only the last X messages for evaluation.</small>
@@ -272,16 +266,7 @@ export function setupUI() {
                 </div>
 
                 <div class="ia-section">
-                    <div class="ia-section-title"><i class="fa-solid fa-file-code"></i> Agent Instructions & Schema Presets</div>
-                    <div class="ia-row">
-                        <label><b>Schema Preset:</b></label>
-                        <div class="ia-preset-bar">
-                            <select id="ia_schema_preset_select" class="text_pole"></select>
-                            <button type="button" id="ia_schema_preset_save_btn" class="menu_button" title="Save Preset"><i class="fa-solid fa-floppy-disk"></i></button>
-                            <button type="button" id="ia_schema_preset_add_btn" class="menu_button" title="Save as New"><i class="fa-solid fa-plus"></i></button>
-                            <button type="button" id="ia_schema_preset_del_btn" class="menu_button" title="Delete Preset"><i class="fa-solid fa-trash"></i></button>
-                        </div>
-                    </div>
+                    <div class="ia-section-title"><i class="fa-solid fa-file-code"></i> Active Prompt (Isolated per Mode)</div>
                     <div class="ia-row">
                         <label><b>Style Prefix:</b></label>
                         <input type="text" id="ia_style_prefix" class="text_pole">
@@ -291,7 +276,7 @@ export function setupUI() {
                         <input type="text" id="ia_default_negative" class="text_pole">
                     </div>
                     <div class="ia-row">
-                        <label><b>Active Instructions & Schema:</b></label>
+                        <label><b>System Instruction / Schema (Edits save exclusively to current mode):</b></label>
                         <textarea id="ia_schema_editor" class="text_pole" rows="11" style="font-family: monospace; font-size: 0.8em;"></textarea>
                     </div>
                     <label style="font-size: 0.8em; opacity: 0.8;"><b>Schema Token Validation:</b></label>
@@ -398,7 +383,6 @@ export function setupUI() {
             </div>
         </div>
         
-        <!-- Lightbox Enlarge Modal -->
         <div id="ia_lightbox_modal" style="display: none;">
             <div class="ia-lightbox-header">
                 <b id="ia_lightbox_title">Image View</b>
@@ -426,18 +410,28 @@ export function setupUI() {
 }
 
 function updateModeHint(mode) {
+    const s = getSettings();
     const hints = {
-        mode1: 'Evaluates recent turns for photo actions, physical shifts, and background transitions. Can output multiple images simultaneously.',
-        mode2: 'Trigger-word driven: fires ONLY if <image> (selfies/devices) or <scene> (action) XML tags are present.',
+        mode1: 'Evaluates recent turns automatically. Generates background OR actions based on context.',
+        mode2: 'Trigger-word driven: fires ONLY if <image> or <scene> XML tags are present in the response.',
         mode3: 'Bypasses the thinking step: unconditionally generates image prompts every X assistant messages.'
     };
     $('#ia_mode_hint').text(hints[mode] || '');
     
-    if (mode === 'mode2') {
-        $('#ia_mode2_instructions').slideDown(150);
-    } else {
+    if (mode === 'mode1') {
         $('#ia_mode2_instructions').slideUp(150);
+        $('#ia_interval_row').slideUp(150);
+        $('#ia_schema_editor').val(s.promptMode1);
+    } else if (mode === 'mode2') {
+        $('#ia_mode2_instructions').slideDown(150);
+        $('#ia_interval_row').slideUp(150);
+        $('#ia_schema_editor').val(s.promptMode2);
+    } else if (mode === 'mode3') {
+        $('#ia_mode2_instructions').slideUp(150);
+        $('#ia_interval_row').slideDown(150);
+        $('#ia_schema_editor').val(s.promptMode3);
     }
+    updateMacroBadges();
 }
 
 function bindSettingsEvents() {
@@ -451,13 +445,6 @@ function bindSettingsEvents() {
     $('#ia_agent_mode').val(s.agentMode || 'mode1').on('change', function () {
         s.agentMode = $(this).val();
         updateModeHint(s.agentMode);
-        if (s.agentMode === 'mode1' && s.schemaPresets['Mode 1: Full Autonomous (Doublesub)']) {
-            switchSchemaPreset('Mode 1: Full Autonomous (Doublesub)');
-        } else if (s.agentMode === 'mode2' && s.schemaPresets['Mode 2: Tag Triggered (<image> & <scene>)']) {
-            switchSchemaPreset('Mode 2: Tag Triggered (<image> & <scene>)');
-        } else if (s.agentMode === 'mode3' && s.schemaPresets['Mode 3: Direct Prompt Generator']) {
-            switchSchemaPreset('Mode 3: Direct Prompt Generator');
-        }
         saveSettings();
     });
     updateModeHint(s.agentMode || 'mode1');
@@ -473,7 +460,16 @@ function bindSettingsEvents() {
     $('#ia_style_prefix').val(s.stylePrefix).on('input', function () { s.stylePrefix = $(this).val(); saveSettings(); });
     $('#ia_default_negative').val(s.defaultNegative).on('input', function () { s.defaultNegative = $(this).val(); saveSettings(); });
 
-    $('#ia_schema_editor').val(s.activeSchemaText).on('input', function () { s.activeSchemaText = $(this).val(); updateMacroBadges(); saveSettings(); });
+    $('#ia_schema_editor').val(
+        s.agentMode === 'mode1' ? s.promptMode1 : (s.agentMode === 'mode2' ? s.promptMode2 : s.promptMode3)
+    ).on('input', function () { 
+        const val = $(this).val();
+        if (s.agentMode === 'mode1') s.promptMode1 = val;
+        if (s.agentMode === 'mode2') s.promptMode2 = val;
+        if (s.agentMode === 'mode3') s.promptMode3 = val;
+        updateMacroBadges(); 
+        saveSettings(); 
+    });
 
     $('#ia_res_port_w').val(s.resPortraitW).on('change', function () { s.resPortraitW = parseInt($(this).val()) || 832; saveSettings(); });
     $('#ia_res_port_h').val(s.resPortraitH).on('change', function () { s.resPortraitH = parseInt($(this).val()) || 1216; saveSettings(); });
@@ -514,7 +510,6 @@ function bindSettingsEvents() {
     $('#ia_close_lightbox').on('click', () => $('#ia_lightbox_modal').fadeOut(150));
     $('#ia_gallery_flat_toggle').on('change', () => renderGalleryContent(window._iaLastFilterChar, window._iaLastFilterType));
 
-    // Diagnostic Handlers
     $('#ia_ping_llm_btn').on('click', async () => {
         toastr.info('Pinging LLM...', 'Diagnostics');
         const t0 = performance.now();
@@ -544,11 +539,6 @@ function bindSettingsEvents() {
         }
     });
 
-    // Preset Handlers
-    $('#ia_schema_preset_select').on('change', function () { switchSchemaPreset($(this).val()); });
-    $('#ia_schema_preset_save_btn').on('click', () => saveCurrentSchemaPreset());
-    $('#ia_schema_preset_add_btn').on('click', () => addNewSchemaPreset());
-    $('#ia_schema_preset_del_btn').on('click', () => deleteCurrentSchemaPreset());
     $('#ia_workflow_preset_select').on('change', function () { switchWorkflowPreset($(this).val()); });
     $('#ia_wf_preset_save_btn').on('click', () => saveCurrentWorkflowPreset());
     $('#ia_wf_preset_add_btn').on('click', () => addNewWorkflowPreset());
@@ -557,69 +547,11 @@ function bindSettingsEvents() {
 
 function refreshPresetDropdowns() {
     const s = getSettings();
-    const $sSel = $('#ia_schema_preset_select').empty();
-    Object.keys(s.schemaPresets).forEach(name => {
-        $sSel.append(`<option value="${name}">${name}</option>`);
-    });
-    $sSel.val(s.selectedSchemaPreset);
-
     const $wSel = $('#ia_workflow_preset_select').empty();
     Object.keys(s.workflowPresets).forEach(name => {
         $wSel.append(`<option value="${name}">${name}</option>`);
     });
     $wSel.val(s.selectedWorkflowPreset);
-}
-
-function switchSchemaPreset(name) {
-    const s = getSettings();
-    if (s.schemaPresets[name]) {
-        s.selectedSchemaPreset = name;
-        s.activeSchemaText = s.schemaPresets[name];
-        $('#ia_schema_editor').val(s.activeSchemaText);
-        $('#ia_schema_preset_select').val(name);
-        updateMacroBadges();
-        saveSettings();
-        toastr.info(`Loaded schema: ${name}`, 'Presets');
-    }
-}
-
-function saveCurrentSchemaPreset() {
-    const s = getSettings();
-    const name = s.selectedSchemaPreset;
-    s.schemaPresets[name] = $('#ia_schema_editor').val();
-    s.activeSchemaText = s.schemaPresets[name];
-    saveSettings();
-    toastr.success(`Saved schema preset "${name}"`, 'Presets');
-}
-
-function addNewSchemaPreset() {
-    const name = prompt('Enter a name for the new Schema Preset:');
-    if (!name) return;
-    const s = getSettings();
-    s.schemaPresets[name] = $('#ia_schema_editor').val();
-    s.selectedSchemaPreset = name;
-    s.activeSchemaText = s.schemaPresets[name];
-    refreshPresetDropdowns();
-    saveSettings();
-    toastr.success(`Created schema preset "${name}"`, 'Presets');
-}
-
-function deleteCurrentSchemaPreset() {
-    const s = getSettings();
-    const name = s.selectedSchemaPreset;
-    if (name.startsWith('Mode ')) {
-        toastr.warning('Cannot delete built-in factory presets.', 'Presets');
-        return;
-    }
-    if (confirm(`Delete schema preset "${name}"?`)) {
-        delete s.schemaPresets[name];
-        s.selectedSchemaPreset = Object.keys(s.schemaPresets)[0];
-        s.activeSchemaText = s.schemaPresets[s.selectedSchemaPreset];
-        $('#ia_schema_editor').val(s.activeSchemaText);
-        refreshPresetDropdowns();
-        saveSettings();
-        toastr.info(`Deleted preset "${name}"`, 'Presets');
-    }
 }
 
 function switchWorkflowPreset(name) {
@@ -720,7 +652,7 @@ function setupAndroidBubble() {
 function openGallery() {
     $('#ia_gallery_bubble').fadeOut(150);
     renderGalleryNav();
-    renderGalleryContent('all', null); // Default to all media
+    renderGalleryContent('all', null);
     $('#ia_gallery_modal').fadeIn(200);
 }
 
@@ -833,7 +765,6 @@ function renderGalleryContent(filterChar = null, filterType = null) {
         return;
     }
 
-    // Build massive string for fast injection & guaranteed DOM integrity
     let htmlStr = '';
     records.forEach(r => {
         const displayUrl = r.url && r.url.startsWith('ia_bg_') ? `/backgrounds/${r.url}` : (r.url || r.cleanUrl);
@@ -868,7 +799,6 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     
     $grid.append(htmlStr);
 
-    // Event Delegation (Fixes all mobile tapping bugs and missing clicks)
     $grid.off('click', '.ia-clickable-img, .ia-expand-btn').on('click', '.ia-clickable-img, .ia-expand-btn', function(e) {
         e.preventDefault(); e.stopPropagation();
         const id = $(this).closest('.ia-card').attr('data-id');

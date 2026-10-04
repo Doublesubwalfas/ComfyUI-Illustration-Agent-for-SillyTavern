@@ -96,13 +96,18 @@ export async function runEvaluation(force = false, tags = null) {
 
         const activeChar = context.characters?.[context.characterId];
         const charDescription = activeChar?.data?.description || activeChar?.description || '';
-        const activeSchema = s.activeSchemaText || '';
+        
+        let activeSchema = s.promptMode1;
+        if (s.agentMode === 'mode2') activeSchema = s.promptMode2;
+        if (s.agentMode === 'mode3') activeSchema = s.promptMode3;
 
         // Inject the extracted XML description into the prompt for Mode 2
         let mode2Context = "";
         if (s.agentMode === 'mode2' && tags) {
-            if (tags.extractedImageText) mode2Context += `\n[EXTRACTED <image> REQUEST]: ${tags.extractedImageText}\n`;
-            if (tags.extractedSceneText) mode2Context += `\n[EXTRACTED <scene> REQUEST]: ${tags.extractedSceneText}\n`;
+            mode2Context += "\n[THE FOLLOWING VISUAL DESCRIPTION WAS EXTRACTED FROM THE ASSISTANT'S RESPONSE:]\n";
+            if (tags.extractedImageText) mode2Context += `-> ${tags.extractedImageText}\n`;
+            if (tags.extractedSceneText) mode2Context += `-> ${tags.extractedSceneText}\n`;
+            mode2Context += "CONVERT THIS EXACT DESCRIPTION INTO IMAGE TAGS.\n";
         }
 
         const fullPrompt = `${activeSchema}
@@ -134,24 +139,28 @@ ${cleanTriggerTags(lastMsg.mes)}
         if (!jsonMatch) throw new Error('No JSON object returned by LLM');
         const result = JSON.parse(jsonMatch[0]);
 
-        console.log('[Illustration Agent Decision]', result);
+        console.log('[Illustration Agent Output]', result);
 
-        if (result.decision !== 'yes' && !force) {
-            toastr.info(`Decision: Static scene, no illustration needed.`, 'Doublesub');
-            resetGeneratingIndicator();
-            return;
+        let items = [];
+
+        if (s.agentMode === 'mode1') {
+            if (result.decision !== 'yes' && !force) {
+                toastr.info(`Decision: Static scene, no illustration needed.`, 'Doublesub');
+                resetGeneratingIndicator();
+                return;
+            }
+            if (result.background && result.background.generate) items.push({ type: 'background', ...result.background });
+            if (result.roleplay && result.roleplay.generate) items.push({ type: 'roleplay', ...result.roleplay });
+            
+            // Fallback for safety
+            if (items.length === 0 && result.prompt) items.push({ type: 'roleplay', ...result });
+        } else {
+            // Modes 2 and 3 bypass decision logic completely since they are forced triggers
+            items.push({ type: 'roleplay', ...result });
         }
 
-        let items = Array.isArray(result.illustrations) ? result.illustrations : [result];
-
         items.forEach(item => {
-            let isBg = (item.type === 'background' || item.target === 'background');
-            
-            if (s.agentMode === 'mode2' || s.agentMode === 'mode3') {
-                isBg = false;
-            }
-
-            if (isBg) {
+            if (item.type === 'background') {
                 const loc = item.location || 'New Scene';
                 const matchedBg = findExistingBackground(loc);
 
@@ -165,7 +174,7 @@ ${cleanTriggerTags(lastMsg.mes)}
                     toastr.info(`Decision: Generating background for "${loc}"`, 'Doublesub');
                     enqueueTask(async () => {
                         const bgPositive = [s.stylePrefix, item.prompt, 'scenery, landscape, interior, detailed background, no people, empty scene'].filter(Boolean).join(', ');
-                        const bgNegative = [s.defaultNegative, 'character, person, people, human, face, girl, boy, 1girl'].filter(Boolean).join(', ');
+                        const bgNegative = [s.defaultNegative, item.negativePrompt || 'character, person, people, human, face, girl, boy, 1girl'].filter(Boolean).join(', ');
 
                         const bgResult = await generateComfyImage(bgPositive, bgNegative, s.resBgW, s.resBgH, {
                             ...item,
@@ -180,7 +189,7 @@ ${cleanTriggerTags(lastMsg.mes)}
                     });
                 }
             } else {
-                toastr.success(`Decision: Illustrating scene (${item.reason || 'Action Moment'})`, 'Doublesub');
+                toastr.success(`Decision: Illustrating scene`, 'Doublesub');
                 const combinedPos = [s.stylePrefix, item.prompt].filter(Boolean).join(', ');
                 const combinedNeg = [s.defaultNegative, item.negativePrompt].filter(Boolean).join(', ');
 

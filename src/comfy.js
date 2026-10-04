@@ -16,7 +16,6 @@ export function getEffectiveComfyUrl() {
     return url;
 }
 
-// Uploads standard roleplay images to ST's chat uploads
 async function uploadToSillyTavernServer(imgBlob, filename) {
     try {
         const formData = new FormData();
@@ -37,11 +36,10 @@ async function uploadToSillyTavernServer(imgBlob, filename) {
     return null;
 }
 
-// Uploads Backgrounds directly to SillyTavern's core Backgrounds list
 async function uploadBackgroundToSillyTavernServer(imgBlob, filename) {
     try {
         const formData = new FormData();
-        formData.append('avatar', imgBlob, filename); // ST expects 'avatar' key for bg upload
+        formData.append('avatar', imgBlob, filename); 
 
         const resp = await fetch('/api/backgrounds/upload', {
             method: 'POST',
@@ -49,7 +47,6 @@ async function uploadBackgroundToSillyTavernServer(imgBlob, filename) {
         });
 
         if (resp.ok) {
-            // It gets saved into public/backgrounds/ as the exact filename
             return filename;
         }
     } catch (e) {
@@ -162,7 +159,7 @@ export async function generateComfyImage(positive, negative, width, height, meta
 
     if (isBg) {
         const uploadedBgName = await uploadBackgroundToSillyTavernServer(imgBlob, filename);
-        if (uploadedBgName) finalCleanUrl = uploadedBgName; // We pass the bare filename for ST slash commands
+        if (uploadedBgName) finalCleanUrl = uploadedBgName;
     } else {
         const serverPath = await uploadToSillyTavernServer(imgBlob, filename);
         if (serverPath) finalCleanUrl = serverPath;
@@ -182,7 +179,7 @@ export async function generateComfyImage(positive, negative, width, height, meta
         type: isBg ? 'background' : 'illustration',
         location: metadata.location || '',
         reason: metadata.reason,
-        url: finalCleanUrl, // if bg, this is just the filename. If img, it's the full relative path
+        url: finalCleanUrl, 
         base64Backup: base64Url,
         favorite: false
     });

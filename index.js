@@ -36,14 +36,13 @@ jQuery(async () => {
 
     // 2. EVALUATION TRIGGER: Only fires when AI completes live generation
     function handleAssistantTurnFinished(msgId) {
-        // Block execution if this event fired during chat load / initialization
         if (Date.now() - EXTENSION_START_TIME < 3000) {
             console.log('[Illustration Agent] Ignored event during initialization phase.');
             return;
         }
 
         const s = getSettings();
-        if (!s || !s.enabled) return; // Master switch
+        if (!s || !s.enabled) return;
 
         if (msgId !== undefined && msgId !== null && lastHandledMessageId === msgId) {
             return;
@@ -64,7 +63,6 @@ jQuery(async () => {
             }
         }
 
-        // Clean UI first so tags disappear instantly, then evaluate
         handleUIRender(msgId);
 
         const phase = s.pipelinePhase || 'post';
@@ -74,7 +72,6 @@ jQuery(async () => {
     }
 
     if (eventSource && events) {
-        // CHAT LOADED: Just clean up tags and attach buttons. Do NOT generate art.
         const chatChangedEvt = events.CHAT_CHANGED || 'chat_changed';
         eventSource.on(chatChangedEvt, () => {
             setTimeout(() => {
@@ -82,13 +79,11 @@ jQuery(async () => {
             }, 400);
         });
 
-        // MESSAGE RENDERED: Clean tags from screen. Do NOT generate art.
         const charRenderEvt = events.CHARACTER_MESSAGE_RENDERED || 'character_message_rendered';
         eventSource.on(charRenderEvt, (msgId) => {
             handleUIRender(msgId);
         });
 
-        // MESSAGE RECEIVED: The AI just finished a live response (or swipe). Trigger the Agent!
         const msgRecvEvt = events.MESSAGE_RECEIVED || 'message_received';
         eventSource.on(msgRecvEvt, (msgId) => {
             if (context.chat && msgId !== undefined && context.chat[msgId]?.is_user) return;

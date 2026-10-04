@@ -407,7 +407,7 @@
     background: rgba(15, 15, 20, 0.95);
     border: 1px solid rgba(255, 255, 255, 0.2);
     border-radius: 12px;
-    z-index: 1000000 !important; /* Extremely high z-index */
+    z-index: 1000000 !important;
     box-shadow: 0 15px 50px rgba(0, 0, 0, 0.9);
     display: flex;
     flex-direction: column;
@@ -436,7 +436,7 @@
 #ia_lightbox_img {
     max-width: 100%;
     max-height: 100%;
-    object-fit: contain; /* Ensures the image fits without being squished */
+    object-fit: contain; 
     border-radius: 6px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.5);
 }

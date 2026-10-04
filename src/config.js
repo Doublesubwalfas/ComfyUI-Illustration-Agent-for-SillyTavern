@@ -4,80 +4,62 @@ export const MODULE_NAME = 'comfyui-illustration-agent';
 export const schemaMode1 = `You are the autonomous Doublesub Illustration Agent for a roleplay novel.
 Analyze the latest assistant turn (<assistant_response>) anchored to recent chat continuity.
 
-Execute these steps strictly:
+### STEP 1: DECISION
+Set "decision" to "yes" ONLY IF:
+1. A direct photo/selfie action happens.
+2. A physical action, dynamic combat, intimacy, or character reveal occurs.
+3. The narrative transitions to a noticeably new location.
+Otherwise, set "decision" to "no" and stop.
 
-### STEP 1: DECISION (yes or no)
-- Set "decision" to "yes" if the latest assistant turn contains ANY of:
-  1. A direct photo/selfie action (a character takes/poses for/requests a picture).
-  2. A physical action, dynamic combat, intimacy, transformation, or character reveal.
-  3. The narrative transitions to a noticeably different reusable location/room.
-- Otherwise, set "decision" to "no" (for static conversation). Stop and return empty arrays.
-
-### STEP 2: ILLUSTRATIONS (Array)
-If decision is "yes", you can generate ONE OR MORE images. 
-If the scene changed AND an action occurred, you must output TWO objects in the array (one for background, one for roleplay).
-"type": "background" -> ONLY for new locations. 
-"type": "roleplay" -> For character actions, selfies, intimate moments, portraits.
-
-### STEP 3: NARRATIVE DESCRIPTION & PROMPT
-- "description": Write an accurate, concise 1-2 sentence description in plain natural English of what is visually depicted. Ground it strictly in the character's card traits, outfit, and environment.
-- "prompt": High-quality text-to-image tags derived DIRECTLY from your description.
-- "negativePrompt": Specific tags to avoid (e.g., bad anatomy, distorted hands).
+### STEP 2: SCENE GENERATION
+You can generate a background, a roleplay illustration, or BOTH simultaneously.
+- "background.generate": true -> ONLY for new physical locations.
+- "roleplay.generate": true -> For character actions, selfies, intimate moments, portraits.
 
 Respond ONLY with valid JSON in this exact schema:
 {
   "decision": "yes" | "no",
-  "illustrations": [
-    {
-      "type": "roleplay" | "background",
-      "location": "concise name of place if background (leave empty if roleplay)",
-      "reason": "short explanation of why this image is generated",
-      "description": "grounded 1-2 sentence scene description for LLM memory",
-      "prompt": "detailed image generation tags",
-      "negativePrompt": "negative prompt tags",
-      "aspectRatio": "portrait" | "landscape" | "square"
-    }
-  ]
+  "reason": "short explanation of your decision",
+  "background": {
+     "generate": true | false,
+     "location": "concise name of place",
+     "prompt": "detailed scenery tags, no humans",
+     "negativePrompt": "character, person, human"
+  },
+  "roleplay": {
+     "generate": true | false,
+     "description": "grounded 1-2 sentence scene description for LLM memory",
+     "prompt": "detailed image generation tags (1girl, etc)",
+     "negativePrompt": "negative tags (bad anatomy, etc)",
+     "aspectRatio": "portrait" | "landscape" | "square"
+  }
 }`;
 
 // MODE 2: Extracted XML-Tag Schema (<image> & <scene>)
 export const schemaMode2 = `You are the Scene Illustration Agent for a roleplay novel.
 You have been provided with an extracted visual description requested by the character.
-Your job is to convert their natural language description into high-quality image generation tags.
+Your ONLY job is to convert their natural language description into high-quality image generation tags.
 
 Respond ONLY with valid JSON in this exact schema:
 {
-  "decision": "yes",
-  "illustrations": [
-    {
-      "type": "roleplay",
-      "description": "Cleaned up 1-2 sentence description based on the extracted request",
-      "prompt": "detailed image generation tags (1girl, solo, etc) translating the request",
-      "negativePrompt": "negative prompt tags",
-      "aspectRatio": "portrait" | "landscape" | "square"
-    }
-  ]
+  "description": "Cleaned up 1-2 sentence description based on the extracted request",
+  "prompt": "detailed image generation tags (1girl, solo, etc) translating the request",
+  "negativePrompt": "negative prompt tags",
+  "aspectRatio": "portrait" | "landscape" | "square"
 }`;
 
 // MODE 3: Direct Forced Prompt Generator
 export const schemaMode3 = `You are the Direct Illustration Generator for a roleplay novel.
-Based on the latest assistant turn (<assistant_response>), draft an immediate high-quality illustration prompt.
+Based on the latest assistant turn (<assistant_response>), draft an immediate high-quality illustration prompt of the current moment.
 
 Respond ONLY with valid JSON in this exact schema:
 {
-  "decision": "yes",
-  "illustrations": [
-    {
-      "type": "roleplay",
-      "description": "1-2 sentence visual description of the current moment",
-      "prompt": "detailed image generation tags describing subject, pose, clothes",
-      "negativePrompt": "negative prompt tags to avoid",
-      "aspectRatio": "portrait" | "landscape" | "square"
-    }
-  ]
+  "description": "1-2 sentence visual description of the current moment",
+  "prompt": "detailed image generation tags describing subject, pose, clothes",
+  "negativePrompt": "negative prompt tags to avoid",
+  "aspectRatio": "portrait" | "landscape" | "square"
 }`;
 
-// Default MultiGPU GGUF Workflow with %model%, %clip%, %vae%
 export const defaultComfyWorkflowJson = `{
   "10": {
     "inputs": {
@@ -174,7 +156,13 @@ export const defaultSettings = {
     stylePrefix: 'semi-realistic anime style, 2.5D anime, 3D anime, masterpiece, best quality, cinematic lighting',
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, blurry, jpeg artifacts',
 
-    mode2InjectionText: 'System Note: To trigger an illustration, output a visual description enclosed in <image>...</image> tags (for selfies/photos) or <scene>...</scene> tags (for actions). Example: <image>A selfie of me smiling at the beach wearing a hat.</image>',
+    // STRICT XML Injection Text for Mode 2
+    mode2InjectionText: '[SYSTEM NOTE: To trigger an illustration, you MUST output a visual description enclosed EXACTLY in <image>...</image> tags (for photos) or <scene>...</scene> tags (for actions). Example: <image>A selfie of me smiling.</image> Do NOT add markdown or extra commentary around the tags.]',
+
+    // Isolated Prompts
+    promptMode1: schemaMode1,
+    promptMode2: schemaMode2,
+    promptMode3: schemaMode3,
 
     resPortraitW: 832,
     resPortraitH: 1216,
@@ -193,16 +181,7 @@ export const defaultSettings = {
     comfyClip: 'Qwen3-0.6B-heretic-abliterated-uncensored.i1-Q6_K.gguf',
     comfyVae: 'qwen_image_vae.safetensors',
 
-    activeSchemaText: schemaMode1,
     activeWorkflowText: defaultComfyWorkflowJson,
-
-    schemaPresets: {
-        'Mode 1: Full Autonomous (Doublesub)': schemaMode1,
-        'Mode 2: Tag Triggered (<image> & <scene>)': schemaMode2,
-        'Mode 3: Direct Prompt Generator': schemaMode3
-    },
-    selectedSchemaPreset: 'Mode 1: Full Autonomous (Doublesub)',
-
     workflowPresets: {
         'Default MultiGPU GGUF (Anima + Qwen)': defaultComfyWorkflowJson
     },
