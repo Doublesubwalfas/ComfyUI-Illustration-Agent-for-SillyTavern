@@ -87,7 +87,6 @@ export async function runEvaluation(force = false, tags = null) {
             .join('\n\n');
 
         const activeChar = context.characters?.[context.characterId];
-        // INCREASED SLICE: Gives the LLM up to 1500 characters of the character's description to ensure accuracy
         const charDescription = activeChar?.data?.description || activeChar?.description || '';
         
         let activeSchema = s.promptMode1;
@@ -165,23 +164,24 @@ ${finalAssistantText}
 
 export async function executeImagePipeline(positive, negative, aspectRatio, metadata) {
     const s = getSettings();
-    let width = s.resPortraitW;
-    let height = s.resPortraitH;
+    let width = s.resPortraitW || 832;
+    let height = s.resPortraitH || 1216;
 
     if (aspectRatio === 'landscape') {
-        width = s.resLandscapeW;
-        height = s.resLandscapeH;
+        width = s.resLandscapeW || 1216;
+        height = s.resLandscapeH || 832;
     } else if (aspectRatio === 'square') {
-        width = s.resSquareW;
-        height = s.resSquareH;
+        width = s.resSquareW || 1024;
+        height = s.resSquareH || 1024;
     }
 
     const totalBatch = s.batchCount || 1;
     const generatedResults = [];
+    const backend = s.imageBackend || 'comfyui_direct';
 
     try {
         for (let i = 0; i < totalBatch; i++) {
-            if (s.imageBackend === 'comfyui_direct') {
+            if (backend === 'comfyui_direct') {
                 const res = await generateComfyImage(positive, negative, width, height, metadata);
                 if (res) generatedResults.push(res);
             } else {
