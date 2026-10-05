@@ -1,8 +1,15 @@
 import { getSettings } from './config.js';
 
+// Regex cleaner: extremely aggressive strip for <image> and <scene> XML tags
 export function cleanTriggerTags(text) {
     if (!text || typeof text !== 'string') return text;
     return text.replace(/[*_]*<(image|scene)>[\s\S]*?<\/\1>[*_]*/gi, '').trim();
+}
+
+// Strips out deepseek/reasoning <think>...</think> blocks from text
+export function stripThinkingTags(text) {
+    if (!text || typeof text !== 'string') return text;
+    return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
 export async function persistChat() {

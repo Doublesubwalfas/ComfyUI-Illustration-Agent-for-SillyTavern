@@ -1,6 +1,6 @@
 import { getSettings } from './config.js';
 import { generateComfyImage } from './comfy.js';
-import { deliverRoleplayImage, cleanTriggerTags } from './chat.js';
+import { deliverRoleplayImage, cleanTriggerTags, stripThinkingTags } from './chat.js';
 import { promptReviewModal, showBatchCandidatePicker, resetGeneratingIndicator } from './ui.js';
 
 let isEvaluating = false;
@@ -79,10 +79,15 @@ export async function runEvaluation(force = false, tags = null) {
     isEvaluating = true;
     try {
         const contextText = recentMessages
-            .map(m => `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${cleanTriggerTags(m.mes)}`)
+            .map(m => {
+                let msgText = cleanTriggerTags(m.mes);
+                if (!s.includeThinking) msgText = stripThinkingTags(msgText);
+                return `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${msgText}`;
+            })
             .join('\n\n');
 
         const activeChar = context.characters?.[context.characterId];
+        // INCREASED SLICE: Gives the LLM up to 1500 characters of the character's description to ensure accuracy
         const charDescription = activeChar?.data?.description || activeChar?.description || '';
         
         let activeSchema = s.promptMode1;
@@ -94,20 +99,23 @@ export async function runEvaluation(force = false, tags = null) {
             mode2Context += "\n[THE FOLLOWING VISUAL DESCRIPTION WAS EXTRACTED FROM THE ASSISTANT'S RESPONSE:]\n";
             if (tags.extractedImageText) mode2Context += `-> ${tags.extractedImageText}\n`;
             if (tags.extractedSceneText) mode2Context += `-> ${tags.extractedSceneText}\n`;
-            mode2Context += "CONVERT THIS EXACT DESCRIPTION INTO IMAGE TAGS.\n";
+            mode2Context += "CONVERT THIS EXACT DESCRIPTION INTO IMAGE TAGS AND INCLUDE CHARACTER TRAITS.\n";
         }
+
+        let finalAssistantText = cleanTriggerTags(lastMsg.mes);
+        if (!s.includeThinking) finalAssistantText = stripThinkingTags(finalAssistantText);
 
         const fullPrompt = `${activeSchema}
 
 Character Reference:
 Name: ${activeChar?.name || 'Character'}
-Description: ${charDescription.substring(0, 500)}
+Description: ${charDescription.substring(0, 1500)}
 
 Recent Isolated Context:
 ${contextText}
 ${mode2Context}
 <assistant_response>
-${cleanTriggerTags(lastMsg.mes)}
+${finalAssistantText}
 </assistant_response>`;
 
         $('#ia_gallery_bubble').addClass('is-generating');

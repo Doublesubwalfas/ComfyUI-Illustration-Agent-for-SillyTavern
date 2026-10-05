@@ -164,6 +164,10 @@ export function setupUI() {
                     <div class="ia-row" id="ia_lookback_row">
                         <label for="ia_lookback"><b>Lookback History (Forced Context Window):</b></label>
                         <input type="number" id="ia_lookback" class="text_pole" min="1" max="10" value="3">
+                        <label class="checkbox_label" style="margin-top: 4px;">
+                            <input type="checkbox" id="ia_include_thinking">
+                            <span>Include &lt;think&gt; reasoning blocks in context</span>
+                        </label>
                         <small style="opacity: 0.7;">The agent is strictly sandboxed to read only the last X messages for evaluation.</small>
                     </div>
 
@@ -448,7 +452,9 @@ function bindSettingsEvents() {
     $('#ia_pipeline_phase').val(s.pipelinePhase).on('change', function () { s.pipelinePhase = $(this).val(); saveSettings(); });
     $('#ia_interactive_review').prop('checked', !!s.interactiveReview).on('change', function () { s.interactiveReview = $(this).is(':checked'); saveSettings(); });
     $('#ia_batch_count').val(s.batchCount).on('change', function () { s.batchCount = Math.max(1, parseInt($(this).val()) || 1); saveSettings(); });
+    
     $('#ia_lookback').val(s.lookback).on('change', function () { s.lookback = Math.max(1, parseInt($(this).val()) || 3); saveSettings(); });
+    $('#ia_include_thinking').prop('checked', !!s.includeThinking).on('change', function () { s.includeThinking = $(this).is(':checked'); saveSettings(); });
 
     $('#ia_style_prefix').val(s.stylePrefix).on('input', function () { s.stylePrefix = $(this).val(); saveSettings(); });
     $('#ia_default_negative').val(s.defaultNegative).on('input', function () { s.defaultNegative = $(this).val(); saveSettings(); });
@@ -535,7 +541,6 @@ function bindSettingsEvents() {
     $('#ia_wf_preset_add_btn').on('click', () => addNewWorkflowPreset());
     $('#ia_wf_preset_del_btn').on('click', () => deleteCurrentWorkflowPreset());
 
-    // Selection Handlers
     $('#ia_win_select_btn').on('click', function() {
         window._iaSelectionMode = !window._iaSelectionMode;
         if (window._iaSelectionMode) {
