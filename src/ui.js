@@ -107,7 +107,7 @@ export function setupUI() {
     const settingsHtml = `
     <div id="ia_main_container" class="illustration-agent-settings" style="margin-bottom: 12px;">
         <div class="inline-drawer">
-            <div id="ia_drawer_toggle" class="inline-drawer-toggle inline-drawer-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 6px 10px;">
+            <div id="ia_drawer_toggle" class="inline-drawer-toggle inline-drawer-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 8px 10px;">
                 <b><i class="fa-solid fa-palette" style="margin-right: 6px; color: #ff7675;"></i>Doublesub Illustration Agent</b>
                 <div id="ia_drawer_icon" class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
@@ -132,9 +132,17 @@ export function setupUI() {
                     </div>
 
                     <div class="ia-row">
+                        <label for="ia_image_backend"><b>Generation Backend:</b></label>
+                        <select id="ia_image_backend" class="text_pole">
+                            <option value="comfyui_direct">Direct ComfyUI API (Full Workflow Pipeline)</option>
+                            <option value="slash_imagine">SillyTavern Built-in /imagine Slash Command</option>
+                        </select>
+                    </div>
+
+                    <div class="ia-row">
                         <label for="ia_agent_mode"><b>Agent Operation Mode:</b></label>
                         <select id="ia_agent_mode" class="text_pole">
-                            <option value="mode1">Mode 1: Autonomous Evaluator (Analyzes scene/actions automatically)</option>
+                            <option value="mode1">Mode 1: Autonomous Evaluator (Selfie & Photography Triggered)</option>
                             <option value="mode2">Mode 2: XML Tag-Triggered Only (&lt;image&gt; / &lt;scene&gt;)</option>
                             <option value="mode3">Mode 3: Interval-Forced (Triggers every X messages blindly)</option>
                         </select>
@@ -315,8 +323,13 @@ export function setupUI() {
     </div>
     `;
 
-    const container = $('#extensions_settings').length ? $('#extensions_settings') : $('#extensions_settings2');
-    container.append(settingsHtml);
+    const $mount = $('#ia_settings_mount');
+    if ($mount.length > 0) {
+        $mount.empty().append(settingsHtml);
+    } else {
+        const container = $('#extensions_settings').length ? $('#extensions_settings') : $('#extensions_settings2');
+        container.append(settingsHtml);
+    }
 
     if ($('#ia_gallery_bubble').length === 0) {
         const bodyFloatingHtml = `
@@ -404,12 +417,15 @@ export function setupUI() {
     bindSettingsEvents();
     setupAndroidBubble();
     updateMacroBadges();
+
+    const initialGalleryCount = getGalleryDb().length;
+    $('#ia_gallery_bubble_badge').text(initialGalleryCount > 99 ? '99+' : initialGalleryCount);
 }
 
 function updateModeHint(mode) {
     const s = getSettings();
     const hints = {
-        mode1: 'Evaluates recent turns automatically. Generates roleplay action based on context.',
+        mode1: 'Strict Photography Mode: Triggers ONLY when taking selfies, snapping photos, or showing pictures.',
         mode2: 'Trigger-word driven: fires ONLY if <image> or <scene> XML tags are present in the response.',
         mode3: 'Bypasses the thinking step: unconditionally generates image prompts every X assistant messages.'
     };
@@ -433,12 +449,26 @@ function updateModeHint(mode) {
 
 function bindSettingsEvents() {
     const s = getSettings();
+
+    $('#ia_drawer_toggle').off('click').on('click', function (e) {
+        e.preventDefault();
+        const $content = $('#ia_drawer_content');
+        const $icon = $('#ia_drawer_icon');
+        $content.slideToggle(200);
+        $icon.toggleClass('down up');
+    });
+
     $('#ia_drawer_content').on('click', (e) => e.stopPropagation());
 
     refreshPresetDropdowns();
 
     $('#ia_enabled').prop('checked', !!s.enabled).on('change', function () { s.enabled = $(this).is(':checked'); saveSettings(); });
     
+    $('#ia_image_backend').val(s.imageBackend || 'comfyui_direct').on('change', function () {
+        s.imageBackend = $(this).val();
+        saveSettings();
+    });
+
     $('#ia_agent_mode').val(s.agentMode || 'mode1').on('change', function () {
         s.agentMode = $(this).val();
         updateModeHint(s.agentMode);
@@ -449,11 +479,10 @@ function bindSettingsEvents() {
     $('#ia_mode2_injection').val(s.mode2InjectionText).on('input', function() { s.mode2InjectionText = $(this).val(); saveSettings(); });
     $('#ia_delivery_mode').val(s.deliveryMode || 'attached').on('change', function () { s.deliveryMode = $(this).val(); saveSettings(); });
     $('#ia_trigger_interval').val(s.triggerInterval || 3).on('change', function () { s.triggerInterval = Math.max(1, parseInt($(this).val()) || 3); saveSettings(); });
-    $('#ia_pipeline_phase').val(s.pipelinePhase).on('change', function () { s.pipelinePhase = $(this).val(); saveSettings(); });
     $('#ia_interactive_review').prop('checked', !!s.interactiveReview).on('change', function () { s.interactiveReview = $(this).is(':checked'); saveSettings(); });
-    $('#ia_batch_count').val(s.batchCount).on('change', function () { s.batchCount = Math.max(1, parseInt($(this).val()) || 1); saveSettings(); });
+    $('#ia_batch_count').val(s.batchCount || 1).on('change', function () { s.batchCount = Math.max(1, parseInt($(this).val()) || 1); saveSettings(); });
     
-    $('#ia_lookback').val(s.lookback).on('change', function () { s.lookback = Math.max(1, parseInt($(this).val()) || 3); saveSettings(); });
+    $('#ia_lookback').val(s.lookback || 3).on('change', function () { s.lookback = Math.max(1, parseInt($(this).val()) || 3); saveSettings(); });
     $('#ia_include_thinking').prop('checked', !!s.includeThinking).on('change', function () { s.includeThinking = $(this).is(':checked'); saveSettings(); });
 
     $('#ia_style_prefix').val(s.stylePrefix).on('input', function () { s.stylePrefix = $(this).val(); saveSettings(); });
@@ -494,6 +523,7 @@ function bindSettingsEvents() {
         $('#ia_custom_llm_fields').toggle(s.llmProvider === 'custom');
         saveSettings();
     });
+    $('#ia_custom_llm_fields').toggle(s.llmProvider === 'custom');
     $('#ia_custom_llm_url').val(s.customLlmUrl).on('input', function () { s.customLlmUrl = $(this).val(); saveSettings(); });
     $('#ia_custom_llm_key').val(s.customLlmKey).on('input', function () { s.customLlmKey = $(this).val(); saveSettings(); });
     $('#ia_custom_llm_model').val(s.customLlmModel).on('input', function () { s.customLlmModel = $(this).val(); saveSettings(); });
@@ -505,7 +535,6 @@ function bindSettingsEvents() {
     $('#ia_close_review, #ia_rev_cancel').on('click', () => $('#ia_review_modal').fadeOut(150));
     $('#ia_close_batch_picker').on('click', () => $('#ia_batch_picker_modal').fadeOut(150));
     $('#ia_close_lightbox').on('click', () => $('#ia_lightbox_modal').fadeOut(150));
-    $('#ia_gallery_flat_toggle').on('change', () => renderGalleryContent(window._iaLastFilterChar, window._iaLastFilterType));
 
     $('#ia_ping_llm_btn').on('click', async () => {
         toastr.info('Pinging LLM...', 'Diagnostics');
@@ -646,7 +675,7 @@ function setupAndroidBubble() {
         $bubble.css({ transition: 'none' });
     });
 
-    $(document).off('touchmove mousemove.iabubble').on('touchmove mousemove.iabubble', function (e) {
+    $(document).off('touchmove.iabubble mousemove.iabubble').on('touchmove.iabubble mousemove.iabubble', function (e) {
         if (!isDragging) return;
         const evt = e.touches ? e.touches[0] : e;
         const dx = evt.clientX - startX;
@@ -659,7 +688,7 @@ function setupAndroidBubble() {
         }
     });
 
-    $(document).off('touchend mouseup.iabubble').on('touchend mouseup.iabubble', function () {
+    $(document).off('touchend.iabubble mouseup.iabubble').on('touchend.iabubble mouseup.iabubble', function () {
         if (!isDragging) return;
         isDragging = false;
         if (threshold) {
@@ -785,14 +814,11 @@ function renderGalleryContent(filterChar = null, filterType = null) {
     window._iaLastFilterType = filterType;
 
     const $grid = $('#ia_gallery_content').empty();
-    const isFlat = $('#ia_gallery_flat_toggle').is(':checked');
     let records = [...getGalleryDb()];
 
-    if (!isFlat) {
-        if (filterChar && filterChar !== 'all') records = records.filter(r => r.character === filterChar);
-        if (filterType && filterType !== 'all') {
-            if (filterType === 'favorites') records = records.filter(r => r.favorite);
-        }
+    if (filterChar && filterChar !== 'all') records = records.filter(r => r.character === filterChar);
+    if (filterType && filterType !== 'all') {
+        if (filterType === 'favorites') records = records.filter(r => r.favorite);
     }
 
     if (records.length === 0) {
