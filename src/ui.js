@@ -107,7 +107,7 @@ export function setupUI() {
     const settingsHtml = `
     <div id="ia_main_container" class="illustration-agent-settings" style="margin-bottom: 12px;">
         <div class="inline-drawer">
-            <div id="ia_drawer_toggle" class="inline-drawer-toggle inline-drawer-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 8px 10px;">
+            <div id="ia_drawer_toggle" class="ia-drawer-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 8px 10px;">
                 <b><i class="fa-solid fa-palette" style="margin-right: 6px; color: #ff7675;"></i>Doublesub Illustration Agent</b>
                 <div id="ia_drawer_icon" class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
@@ -451,11 +451,13 @@ function bindSettingsEvents() {
     const s = getSettings();
 
     $('#ia_drawer_toggle').off('click').on('click', function (e) {
-        e.preventDefault();
-        const $content = $('#ia_drawer_content');
-        const $icon = $('#ia_drawer_icon');
-        $content.slideToggle(200);
-        $icon.toggleClass('down up');
+    	e.preventDefault();
+    	e.stopPropagation();
+    	e.stopImmediatePropagation();
+    	const $content = $('#ia_drawer_content');
+    	const $icon = $('#ia_drawer_icon');
+    	$content.stop(true, true).slideToggle(200);
+    	$icon.toggleClass('down up');
     });
 
     $('#ia_drawer_content').on('click', (e) => e.stopPropagation());
