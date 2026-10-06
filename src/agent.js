@@ -10,17 +10,14 @@ import { reviewPrompt, pickCandidate } from './dialogs.js';
 import { emit } from './bus.js';
 import { waitForStIdle } from './stb.js';
 
-// ===========================================================================
-//  The agent loop:   SENSE (free, local)  ->  DECIDE (one cheap LLM call)  ->  ACT (queued)
-// ===========================================================================
-
+// RESTORED: Instructs model to respect Character Reference rather than ignore it
 const AGENT_SYSTEM_PROMPT =
-    'You are an expert anime and visual director generating image generation prompts. ' +
-    'Faithfully extract and preserve all character appearance details (hair color and style, eye color, facial features, body type, clothing, and accessories) from the Character Reference. ' +
-    'Respond ONLY with the requested JSON object.';
+    'You are the autonomous Marinara Illustration Director. ' +
+    'Your duty is to ground image generation prompts strictly in the Character Reference (hair, eyes, body type, expression, outfit) and scene continuity. ' +
+    'Respond ONLY with valid JSON matching the requested schema.';
 
-const MAX_MSG_CHARS = 1200;
-const MAX_CHAR_DESC = 3500; // Expanded so full card appearance isn't cut off
+const MAX_MSG_CHARS = 1800; // Expanded to retain full scene actions
+const MAX_CHAR_DESC = 3500; // Expanded to preserve complete character appearance
 const MAX_QUEUE = 3;
 const MODE2_KEY = 'illustration_agent_mode2';
 
@@ -30,9 +27,6 @@ const queue = [];
 let queueRunning = false;
 let currentJobAbort = null;
 
-// ---------------------------------------------------------------------------
-// Status
-// ---------------------------------------------------------------------------
 function refreshStatus(detail = '') {
     const state = evalAbort ? 'evaluating' : (queueRunning || queue.length ? 'generating' : 'idle');
     emit('status', state, detail || (queue.length ? `${queue.length} queued` : ''));
@@ -80,9 +74,6 @@ async function runQueue() {
     refreshStatus();
 }
 
-// ---------------------------------------------------------------------------
-// Mode 2: Inject <image> instruction
-// ---------------------------------------------------------------------------
 export function syncMode2Injection() {
     try {
         const s = getSettings();
@@ -94,9 +85,6 @@ export function syncMode2Injection() {
     } catch (e) { console.warn('[Illustration Agent] could not sync Mode 2 instruction', e); }
 }
 
-// ---------------------------------------------------------------------------
-// LLM access
-// ---------------------------------------------------------------------------
 export async function queryAgentLLM(prompt, signal = null) {
     const s = getSettings();
     const ctx = getCtx();
@@ -114,7 +102,7 @@ export async function queryAgentLLM(prompt, signal = null) {
                 body: JSON.stringify({
                     model: s.customLlmModel,
                     messages: [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
-                    temperature: 0.2, max_tokens: 900 // Increased token limit for rich prompts
+                    temperature: 0.2, max_tokens: 900 // Expanded so prompt tags aren't truncated
                 })
             });
             if (!resp.ok) throw new Error(`Custom LLM HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
@@ -128,7 +116,7 @@ export async function queryAgentLLM(prompt, signal = null) {
         if (!s.connectionProfile) throw new Error('Pick a Connection Profile in the Evaluator section.');
         let svc = ctx.ConnectionManagerRequestService;
         if (!svc?.sendRequest) {
-            try { svc = (await import(new URL('/scripts/extensions/shared.js', location.origin).href)).ConnectionManagerRequestService; } catch (_) { /* handled below */ }
+            try { svc = (await import(new URL('/scripts/extensions/shared.js', location.origin).href)).ConnectionManagerRequestService; } catch (_) {}
         }
         if (!svc?.sendRequest) throw new Error('Connection Manager is not available in this SillyTavern.');
         const messages = [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }];
@@ -148,15 +136,12 @@ export async function queryAgentLLM(prompt, signal = null) {
 
     if (typeof ctx.generateRaw === 'function') {
         return await withTimeout(ctx.generateRaw({
-            systemPrompt: AGENT_SYSTEM_PROMPT, prompt, responseLength: 800, trimNames: false
+            systemPrompt: AGENT_SYSTEM_PROMPT, prompt, responseLength: 850, trimNames: false
         }), ms, 'Evaluator');
     }
     return await withTimeout(ctx.generateQuietPrompt(prompt, false, true), ms, 'Evaluator');
 }
 
-// ---------------------------------------------------------------------------
-// Parsing the agent's JSON
-// ---------------------------------------------------------------------------
 function extractJsonObject(text) {
     const start = text.indexOf('{');
     if (start < 0) return null;
@@ -199,9 +184,6 @@ function resultFromTags(tags) {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Sensing helpers
-// ---------------------------------------------------------------------------
 const isAssistant = (m) => m && !m.is_user && !m.is_system;
 
 export function intervalDue(chat, idx, interval) {
@@ -219,6 +201,7 @@ export function turnsSinceIllustration(chat, idx) {
     return Infinity;
 }
 
+// Extracts character card data across both description and personality
 function findCharacter(ctx, msg) {
     const chars = ctx.characters || [];
     if (msg.original_avatar) { const c = chars.find(x => x.avatar === msg.original_avatar); if (c) return c; }
@@ -238,6 +221,8 @@ function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
     const look = Math.max(1, parseInt(s.lookback) || 3);
     const recent = chat.slice(Math.max(0, idx - look + 1), idx + 1);
     const ch = findCharacter(ctx, msg);
+    
+    // Aggregates both description and personality fields for complete character appearance
     const descParts = [
         ch?.data?.description || ch?.description,
         ch?.data?.personality || ch?.personality
@@ -249,7 +234,7 @@ function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
         tagBlock = '\n[VISUAL DESCRIPTION EXTRACTED FROM THE ASSISTANT\'S RESPONSE:]\n';
         if (tags.image) tagBlock += `-> ${tags.image}\n`;
         if (tags.scene) tagBlock += `-> ${tags.scene}\n`;
-        tagBlock += 'CONVERT THIS EXACT DESCRIPTION INTO DETAILED BOORU TAGS AND STRICTLY INCLUDE THE CHARACTER TRAITS BELOW.\n';
+        tagBlock += 'CONVERT THIS EXACT DESCRIPTION INTO IMAGE TAGS AND PRESERVE THE CHARACTER\'S VISUAL TRAITS.\n';
     }
 
     let last = cleanTriggerTags(msg.mes || '');
@@ -260,7 +245,7 @@ function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
 
 Character Reference:
 Name: ${ch?.name || msg.name || 'Character'}
-Appearance & Traits:
+Description & Visual Appearance:
 ${truncate(desc, MAX_CHAR_DESC)}
 
 Recent Isolated Context:
@@ -276,10 +261,6 @@ function sizeFor(aspect, s) {
     if (aspect === 'square') return [s.resSquareW || 1024, s.resSquareH || 1024];
     return [s.resPortraitW || 832, s.resPortraitH || 1216];
 }
-
-// ---------------------------------------------------------------------------
-// ENTRY POINTS
-// ---------------------------------------------------------------------------
 
 export async function handleNewMessage(idx) {
     const s = getSettings();
@@ -300,9 +281,6 @@ export async function illustrateMessage(idx = null) {
     await evaluate({ idx, tags: readTags(chat[idx]), force: true });
 }
 
-// ---------------------------------------------------------------------------
-// SENSE -> DECIDE
-// ---------------------------------------------------------------------------
 async function evaluate({ idx, tags, force }) {
     const s = getSettings();
     const ctx = getCtx();
@@ -332,8 +310,7 @@ async function evaluate({ idx, tags, force }) {
         msg.extra.ia_sig = sig;
     }
 
-    // FIXED: Never overwrite the user's custom prompt with promptMode3 on manual illustrations.
-    // Always use the prompt schema that matches the active agent mode.
+    // Always uses the prompt corresponding to the active mode
     const schema = { mode1: s.promptMode1, mode2: s.promptMode2, mode3: s.promptMode3 }[mode] || s.promptMode1;
     const tagsMode = force && tags.has ? 'forced-tags' : mode;
 
@@ -376,8 +353,8 @@ async function evaluate({ idx, tags, force }) {
     if (mode === 'mode1' && !force && result.decision !== 'yes') { notify('info', 'No illustration needed for this turn.'); return; }
     if (!result.prompt) { notify('warning', 'The agent returned an empty prompt, so nothing was generated.'); return; }
 
-    // -------------------- ACT --------------------
-    let positive = joinTags(s.stylePrefix, result.prompt);
+    // Prioritizes character appearance tags before quality/style prefix
+    let positive = joinTags(result.prompt, s.stylePrefix);
     let negative = joinTags(s.defaultNegative, result.negativePrompt);
     let aspect = result.aspectRatio;
     let description = result.description;
