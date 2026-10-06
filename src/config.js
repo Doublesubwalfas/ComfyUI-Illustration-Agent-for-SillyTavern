@@ -17,6 +17,7 @@ export const DEFAULT_WORKFLOW = {
     "9": { class_type: "SaveImage", inputs: { filename_prefix: "ia_agent", images: ["8", 0] } }
 };
 
+// GGUF MultiGPU / UNETLoader Workflow (Alternative)
 export const GGUF_WORKFLOW = {
     "3": { class_type: "KSampler", inputs: {
         seed: "%seed%", steps: "%steps%", cfg: "%cfg%", sampler_name: "%sampler%",
@@ -34,61 +35,46 @@ export const GGUF_WORKFLOW = {
 
 const JSON_SHAPE = '{"decision":"yes"|"no","description":"...","prompt":"...","negativePrompt":"...","aspectRatio":"portrait"|"landscape"|"square"}';
 
-// RESTORED: Marinara Engine's exact step-by-step visual grounding rules
 export const DEFAULT_PROMPTS = {
     promptMode1:
-`You are the autonomous Marinara Illustration Director for this roleplay novel.
-Analyze the latest assistant turn (<assistant_response>) anchored to recent chat continuity.
+`You are an expert visual director deciding whether the latest roleplay turn warrants an illustration.
+Respond ONLY with one JSON object, no commentary:
+${JSON_SHAPE}
 
-Execute these steps strictly:
-
-### STEP 1: DECISION (yes or no)
-Set "decision" to "yes" ONLY IF the latest turn contains an explicit visual beat:
-1. A direct photo/selfie action (a character takes, poses for, sends, or requests a picture).
-2. A physical action, dynamic combat, intimacy, transformation, outfit change, or character reveal.
-3. The narrative transitions to a noticeably different visual environment.
-Otherwise, set "decision" to "no" (for static dialogue, contemplation, or minor gestures). Stop and return empty prompts.
-
-### STEP 2: NARRATIVE GROUNDING (Crucial)
-"description": Write a concise 1-2 sentence visual description in plain natural English of what is depicted.
-- You MUST anchor this strictly to the Character Reference (hair color, hair style, eye color, facial expression, body type, and current outfit). Do not invent missing traits.
-- For photos/selfies: "A selfie taken by [Char] smiling in [Location] wearing [Outfit]..."
-
-### STEP 3: IMAGE GENERATION PROMPT
-"prompt": Comma-separated image generation tags derived DIRECTLY from your Step 2 description.
-- Order: Subject tags first (e.g. 1girl, character name, hair color, eye color, outfit details), followed by pose, expression, camera angle, and environment lighting.
-- Keep character tags explicit so their appearance matches the Character Reference faithfully.
-"negativePrompt": Specific tags to avoid (e.g., bad anatomy, distorted hands, blurry).
-"aspectRatio": "portrait" for characters/selfies, "landscape" for wide scenes, "square" otherwise.
-
-Respond ONLY with valid JSON in this exact schema:
-${JSON_SHAPE}`,
+Rules:
+- decision is "yes" ONLY when the turn contains an explicit visual beat: a photo/selfie, a deliberate pose, an outfit change, an intimate moment, a striking physical action, or a dramatic scene shift.
+- Pure dialogue, contemplation, or minor gestures = "no" (leave "prompt" empty).
+- "prompt": comma-separated booru tags. You MUST construct a richly detailed prompt:
+  * Character: explicitly include hair color, hairstyle, eye color, body type, expression, and current outfit matching the Character Reference.
+  * Scene: pose, camera angle (close-up, wide shot, Dutch angle), lighting (cinematic, volumetric, soft rim light), and environment.
+- "description": 1-2 sentence grounded scene description.
+- "negativePrompt": extra tags to avoid, or "" if none.
+- "aspectRatio": portrait for characters/selfies, landscape for scenery/groups, square otherwise.`,
 
     promptMode2:
-`You are the Marinara Tag Compiler for this roleplay novel.
-A visual description extracted from the roleplay response (<assistant_response>) is provided below.
+`You are a tag compiler. A visual description extracted from the roleplay response is provided below.
+Convert it into detailed, high-quality comma-separated booru tags.
+Respond ONLY with one JSON object, no commentary:
+${JSON_SHAPE.replace('"yes"|"no"', '"yes"')}
 
-Execute these steps strictly:
-1. "description": Clean up the extracted description into a 1-2 sentence caption, explicitly incorporating the character's core visual traits from the Character Reference.
-2. "prompt": Convert that grounded description into detailed comma-separated image tags. Start with character identity tags (gender, hair, eyes, facial features, outfit), then action/pose, then lighting and angle.
-3. "negativePrompt": Tags to avoid (e.g. bad anatomy, distorted limbs).
-4. "aspectRatio": "portrait" for characters/selfies, "landscape" for scenery, "square" otherwise.
-
-Respond ONLY with valid JSON in this exact schema:
-${JSON_SHAPE.replace('"yes"|"no"', '"yes"')}`,
+Rules:
+- Always set decision to "yes".
+- "prompt": comprehensive booru tags translating the extracted description. You MUST incorporate the character's exact physical traits (hair color/style, eye color, body, clothing) from the Character Reference. Include pose, lighting, and camera angle.
+- "description": 1-2 sentence caption summarizing the image.
+- "negativePrompt": extra tags to avoid, or "" if none.
+- "aspectRatio": portrait for people/selfies, landscape for scenery/groups, square otherwise.`,
 
     promptMode3:
-`You are the Marinara Visual Director for this roleplay novel.
-Based on the latest assistant turn (<assistant_response>), draft an immediate high-quality illustration prompt of the depicted moment.
+`You are a visual director. Produce an illustration prompt for the most visually compelling beat in the recent context.
+Respond ONLY with one JSON object, no commentary:
+${JSON_SHAPE.replace('"yes"|"no"', '"yes"')}
 
-Execute these steps strictly:
-1. "description": Write a 1-2 sentence visual description of the scene, explicitly including the character's physical traits from the Character Reference.
-2. "prompt": Convert the scene into detailed comma-separated tags. Lead with character appearance (hair, eyes, clothes from Character Reference), followed by pose, setting, and cinematic lighting.
-3. "negativePrompt": Tags to avoid.
-4. "aspectRatio": "portrait" for character/selfie, "landscape" for wide view, "square" otherwise.
-
-Respond ONLY with valid JSON in this exact schema:
-${JSON_SHAPE.replace('"yes"|"no"', '"yes"')}`
+Rules:
+- Always set decision to "yes".
+- "prompt": highly detailed comma-separated booru tags. You MUST explicitly include hair color, eye color, hairstyle, body type, and clothing matching the Character Reference, plus pose, camera angle, and environment lighting.
+- "description": 1-2 sentence visual description of the depicted moment.
+- "negativePrompt": extra tags to avoid, or "" if none.
+- "aspectRatio": portrait for characters/selfies, landscape for scenery/groups, square otherwise.`
 };
 
 export const DEFAULT_MODE2_INJECTION =
@@ -138,7 +124,7 @@ const DEFAULTS = {
     },
     activeWorkflowText: JSON.stringify(DEFAULT_WORKFLOW, null, 2),
 
-    stylePrefix: 'masterpiece, best quality, cinematic lighting',
+    stylePrefix: 'masterpiece, best quality, aesthetic, highly detailed',
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality',
     ...DEFAULT_PROMPTS,
 

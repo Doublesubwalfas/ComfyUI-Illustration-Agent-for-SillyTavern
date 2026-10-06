@@ -1,5 +1,13 @@
-// Local "sensing" step.
-// Fixed to retain spoken visual statements (like "Take a look at this photo")
+// ---------------------------------------------------------------------------
+// Local "sensing" step. Runs before any LLM call, costs nothing, and decides
+// whether the latest turn even *could* contain something worth illustrating.
+//
+//  * Only NARRATION is scored for the assistant message. Quoted speech is
+//    stripped, so "maybe I'll take a photo someday" does not trigger.
+//  * The user's message is scored in full (it may be a direct request).
+//  * Strong cues are worth 2 points, weak cues 1 (each distinct word counts once).
+//    Sensitivity = minimum score: 1 high, 2 medium, 4 low.
+// ---------------------------------------------------------------------------
 const STRONG = [
     'photo\\w*', 'picture', 'selfie', 'camera', 'snapshot', 'screenshot', 'polaroid', 'portrait',
     'sketch\\w*', 'paint(?:ing|s)\\b', 'pose[sd]?\\b', 'posing',
@@ -35,6 +43,11 @@ function extraRegex(extra) {
     return extraCache.get(key);
 }
 
+// Remove spoken dialogue so only action/description is scored.
+export function narration(text) {
+    return String(text || '').replace(/"[^"\n]*"|“[^”\n]*”/g, ' ');
+}
+
 function distinct(text, re) {
     const found = new Set();
     for (const m of String(text).matchAll(re)) found.add(m[0].toLowerCase());
@@ -51,8 +64,7 @@ export function scoreCues(text, extra = '') {
 }
 
 export function passesGate({ assistantText, userText = '', sensitivity = 2, extra = '' }) {
-    // Scores the assistant and user text directly without stripping dialogue
-    const a = scoreCues(assistantText, extra);
+    const a = scoreCues(narration(assistantText), extra);
     const u = scoreCues(userText, extra);
     const score = a.score + u.score;
     return { pass: score >= (Number(sensitivity) || 2), score, hits: [...a.hits, ...u.hits] };
