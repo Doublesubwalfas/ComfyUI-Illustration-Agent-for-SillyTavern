@@ -352,7 +352,9 @@ async function evaluate({ idx, tags, force }) {
         if (useTagsOnly) {
             result = resultFromTags(tags);
         } else {
-            const raw = await queryAgentLLM(buildPrompt({ schema, ctx, chat, idx, msg, tags, mode: tagsMode }), ac.signal);
+            const fullPrompt = buildPrompt({ schema, ctx, chat, idx, msg, tags, mode: tagsMode });
+	    console.log('[Illustration Agent Prompt Sent]', fullPrompt); // Prints the exact character card & context to your log
+	    const raw = await queryAgentLLM(fullPrompt, ac.signal);
             if (myToken !== runToken || getCtx().chatId !== target.chatId) return;       
             try { result = parseAgentResult(raw); }
             catch (parseErr) {
