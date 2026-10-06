@@ -6,36 +6,19 @@ import { getSettings, notify, lookupByUrl, hasGalleryImages } from './config.js'
 // ---------------------------------------------------------------------------
 const TAG_PRESENT = /<(?:image|scene)>/i;
 
-// All tag names a "reasoning" model might use. Kept as one alternation so
-// closed, attributed, and unclosed forms can share the same vocabulary.
-const THINK_NAMES = 'think(?:ing)?|thought|reasoning|reason|reflection|reflect|analysis|analyse|scratchpad|inner_monologue|inner_thought|chain_of_thought|cot';
-const THINK_CLOSED   = new RegExp(`<(${THINK_NAMES})(\\s[^>]*)?>[\\s\\S]*?<\\/\\1>`, 'gi');
-const THINK_UNCLOSED = new RegExp(`<(${THINK_NAMES})(\\s[^>]*)?>[\\s\\S]*$`, 'i');
-
 export function cleanTriggerTags(text) {
     if (!text || typeof text !== 'string') return text;
     return text
-        .replace(/([*_]{1,2})\s*<(image|scene)>[\s\S]*?<\/\2>\s*\1/gi, '')
+        .replace(/([*_]{1,2})\s*<(image|scene)>[\s\S]*?<\/\2>\s*\1/gi, '')   // *<image>..</image>*
         .replace(/[ \t]*<(image|scene)>[\s\S]*?<\/\1>/gi, '')
-        .replace(/[ \t]*<(?:image|scene)>[\s\S]*$/i, '')
+        .replace(/[ \t]*<(?:image|scene)>[\s\S]*$/i, '')                         // unclosed tag (cut-off reply)
         .replace(/\n{3,}/g, '\n\n')
         .trim();
 }
 
-// Strips every common reasoning/thinking block variant. Safe with attributes,
-// nested whitespace, and truncated (unclosed) blocks.
 export function stripThinkingTags(text) {
     if (!text || typeof text !== 'string') return text;
-    let out = text.replace(THINK_CLOSED, '');
-    out = out.replace(THINK_UNCLOSED, '');
-    return out.replace(/\n{3,}/g, '\n\n').trim();
-}
-
-// True when the text actually contains a reasoning block. Useful for the
-// Include-thinking checkbox to react meaningfully.
-export function hasThinkingTags(text) {
-    if (!text || typeof text !== 'string') return false;
-    return new RegExp(`<(${THINK_NAMES})(\\s[^>]*)?>`, 'i').test(text);
+    return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
 export function stripImageMarkdown(text) {
@@ -49,7 +32,7 @@ export function extractVisualTags(text) {
     const grab = (name) => {
         const closed = new RegExp(`<${name}>([\\s\\S]*?)<\\/${name}>`, 'i').exec(text);
         if (closed && closed[1].trim()) return closed[1].trim();
-        const open = new RegExp(`<${name}>([\\s\\S]{1,400})$`, 'i').exec(text);
+        const open = new RegExp(`<${name}>([\\s\\S]{1,400})$`, 'i').exec(text);   // unclosed
         return open && open[1].trim() ? open[1].trim() : null;
     };
     out.image = grab('image');
@@ -66,13 +49,8 @@ export function readTags(msg) {
     return { ...t, has: !!(t.image || t.scene) };
 }
 
-// Signature ignores reasoning output when the user has it off, so a model
-// that re-generates with different hidden reasoning does not trigger a re-eval.
 export function contentSig(msg) {
-    const s = getSettings();
-    let raw = cleanTriggerTags(msg?.mes || '');
-    if (!s.includeThinking) raw = stripThinkingTags(raw);
-    return hashString(stripImageMarkdown(raw));
+    return hashString(stripImageMarkdown(cleanTriggerTags(msg?.mes || '')));
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +82,7 @@ export function lastAssistantIndex() {
     return null;
 }
 
+// Remove <image>/<scene> tags from a message (and its swipes) once they've been read.
 export function stripTagsInMessage(idx) {
     const msg = getCtx().chat?.[idx];
     if (!msg || msg.is_user) return false;
@@ -118,6 +97,8 @@ export function stripTagsInMessage(idx) {
     return changed;
 }
 
+// A target is a *reference* to the message an image belongs to, captured when the
+// decision is made. Generation can take a minute; the chat may move on or change.
 export function snapshotTarget(idx) {
     const ctx = getCtx();
     const m = ctx.chat?.[idx];
@@ -181,6 +162,7 @@ export async function deliverRoleplayImage(url, description, target = null) {
     return true;
 }
 
+// Swap an image URL inside whichever message contains it (used by Reroll).
 export function replaceImageUrl(oldUrls, newUrl) {
     const ctx = getCtx();
     const olds = [].concat(oldUrls).filter(Boolean);
@@ -207,6 +189,10 @@ export async function showImageToCharacter(url, description) {
     notify('success', 'Image sent to the character.');
 }
 
+// ---------------------------------------------------------------------------
+// In-chat decoration (idempotent): reroll buttons on our images, a wand button
+// on every assistant message. Also repairs migrated legacy image links.
+// ---------------------------------------------------------------------------
 export function decorateChat() {
     if (hasGalleryImages()) {
         document.querySelectorAll('#chat .mes_text img').forEach(img => {
