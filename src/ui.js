@@ -1,995 +1,338 @@
 import {
-    getSettings,
-    saveSettings,
-    getGalleryDb,
-    deleteGalleryRecords
+    getSettings, saveSettings, DEFAULT_PROMPTS, DEFAULT_MODE2_INJECTION, notify
 } from './config.js';
-import { getEffectiveComfyUrl } from './comfy.js';
-import { queryAgentLLM, runEvaluation } from './agent.js';
-import { deliverRoleplayImage, showImageToCharacter } from './chat.js';
+import { getCtx, escapeHtml, clamp } from './util.js';
+import { queryAgentLLM, illustrateMessage, cancelAll, syncMode2Injection } from './agent.js';
+import { pingComfy, migrateLegacyImages } from './comfy.js';
+import { initDialogs } from './dialogs.js';
+import { initGallery, openGallery } from './gallery.js';
+import { on, emit } from './bus.js';
 
-// Module-scoped UI state (replaces window._ia* globals)
-export const galleryState = {
-    selectionMode: false,
-    selectedIds: new Set(),
-    lastFilterChar: null,
-    lastFilterType: null,
-    searchQuery: ''
+const $r = (sel) => $('#ia_main_container').find(sel);
+
+// ---- tiny field builders (each field carries data-ia="<settings key>") -----
+const chk = (key, label, hint = '') =>
+    `<label class="checkbox_label" title="${escapeHtml(hint)}"><input type="checkbox" data-ia="${key}"><span>${label}</span></label>`;
+const num = (key, label, min, max, step = 1) =>
+    `<label class="ia-field"><span>${label}</span><input type="number" class="text_pole" data-ia="${key}" data-type="${step % 1 ? 'float' : 'int'}" min="${min}" max="${max}" step="${step}"></label>`;
+const txt = (key, label, ph = '', type = 'text') =>
+    `<label class="ia-field"><span>${label}</span><input type="${type}" class="text_pole" data-ia="${key}" placeholder="${escapeHtml(ph)}" autocomplete="off"></label>`;
+const sel = (key, label, opts, type = 'text') =>
+    `<label class="ia-field"><span>${label}</span><select class="text_pole" data-ia="${key}" data-type="${type}">${opts.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select></label>`;
+const area = (key, label, rows, mono = false) =>
+    `<label class="ia-field"><span>${label}</span><textarea class="text_pole${mono ? ' ia-mono' : ''}" rows="${rows}" data-ia="${key}"></textarea></label>`;
+const section = (icon, title, body, open = false) =>
+    `<details class="ia-sec"${open ? ' open' : ''}><summary><i class="fa-solid ${icon}"></i> ${title}</summary><div class="ia-sec-body">${body}</div></details>`;
+
+function buildHtml() {
+    return `
+<div id="ia_main_container" class="ia-root">
+  <div class="inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header">
+      <b><i class="fa-solid fa-palette" style="color:#ff7675;margin-right:6px"></i>Illustration Agent</b>
+      <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    </div>
+    <div class="inline-drawer-content">
+
+      <div class="ia-topbar">
+        ${chk('enabled', '<b>Enabled</b>', 'Master switch')}
+        <span id="ia_status" class="ia-status">Idle</span>
+      </div>
+      <div class="ia-btnrow">
+        <button type="button" id="ia_open_gallery" class="menu_button"><i class="fa-solid fa-images"></i> Gallery</button>
+        <button type="button" id="ia_eval_now" class="menu_button"><i class="fa-solid fa-bolt"></i> Illustrate last message</button>
+        <button type="button" id="ia_cancel" class="menu_button" title="Cancel running and queued jobs"><i class="fa-solid fa-ban"></i></button>
+      </div>
+
+      ${section('fa-robot', 'Agent', `
+        ${sel('agentMode', 'Mode', [
+            ['mode1', '1 · Autonomous (decides by itself)'],
+            ['mode2', '2 · Tag-triggered (<image> / <scene>)'],
+            ['mode3', '3 · Every N messages']])}
+        <small id="ia_mode_hint" class="ia-muted"></small>
+
+        <div data-ia-mode="mode1" class="ia-group">
+          ${chk('fastGate', 'Local pre-filter (skip the LLM on pure dialogue)', 'Free, instant keyword scoring of the narration. Strongly recommended.')}
+          ${sel('gateSensitivity', 'Pre-filter sensitivity', [['1', 'High: any visual hint'], ['2', 'Medium (recommended)'], ['4', 'Low: clear visual beats only']], 'int')}
+          ${txt('extraCues', 'Extra trigger words (comma separated)', 'e.g. cosplay, onsen, katana')}
+          ${num('cooldown', 'Cooldown (assistant turns between auto-illustrations)', 0, 20)}
+        </div>
+        <div data-ia-mode="mode2" class="ia-group">
+          ${chk('mode2Inject', 'Automatically add the instruction below to the chat prompt', 'Without this you must paste it into your card or Author\'s Note yourself.')}
+          ${chk('mode2SkipLLM', 'Fast: use the tag text directly (no LLM call)', 'Skips tag compilation. Best for natural-language image models.')}
+          ${area('mode2InjectionText', 'Instruction sent to the roleplay model', 5, true)}
+          <button type="button" id="ia_reset_m2" class="menu_button">Reset instruction</button>
+        </div>
+        <div data-ia-mode="mode3" class="ia-group">
+          ${num('triggerInterval', 'Generate every N assistant messages', 1, 20)}
+        </div>
+
+        ${num('lookback', 'Lookback (messages the evaluator reads)', 1, 10)}
+        ${chk('includeThinking', 'Include &lt;think&gt; blocks in the evaluator context')}
+        ${num('batchCount', 'Images per generation', 1, 4)}
+        ${chk('interactiveReview', 'Review and edit the prompt before generating')}
+        ${sel('deliveryMode', 'Delivery', [['attached', 'Append to the assistant message'], ['separate', 'Separate comment card']])}
+        ${sel('toasts', 'Notifications', [['normal', 'Normal'], ['quiet', 'Quiet (errors and warnings only)']])}
+      `, true)}
+
+      ${section('fa-brain', 'Evaluator LLM', `
+        ${sel('llmProvider', 'Source', [
+            ['current', 'Current chat model (isolated prompt)'],
+            ['profile', 'Connection Profile (recommended: a small, fast model)'],
+            ['custom', 'Custom OpenAI-compatible API']])}
+        <div data-ia-llm="profile" class="ia-group">
+          ${sel('connectionProfile', 'Profile', [['', '(none)']])}
+        </div>
+        <div data-ia-llm="custom" class="ia-group">
+          ${txt('customLlmUrl', 'API base URL', 'https://api.openai.com/v1')}
+          ${txt('customLlmKey', 'API key', '', 'password')}
+          ${txt('customLlmModel', 'Model', 'gpt-4o-mini')}
+          <small class="ia-muted">The key is stored in your SillyTavern settings. The browser calls this API directly, so the provider must allow CORS.</small>
+        </div>
+        ${num('llmTimeoutSec', 'Timeout (seconds)', 5, 300)}
+        <button type="button" id="ia_test_llm" class="menu_button"><i class="fa-solid fa-plug"></i> Test evaluator</button>
+      `)}
+
+      ${section('fa-wand-magic-sparkles', 'Image generation', `
+        ${sel('imageBackend', 'Backend', [['comfyui', 'ComfyUI workflow (full control)'], ['sd_command', 'SillyTavern /sd (Image Generation extension)']])}
+        <div data-ia-img="comfyui" class="ia-group">
+          ${sel('comfyTransport', 'Connection', [['server', 'Through SillyTavern server (works on phones and tunnels)'], ['direct', 'Direct from browser (advanced; needs CORS)']])}
+          ${txt('comfyUrl', 'ComfyUI URL (as seen from the SillyTavern host)', 'http://127.0.0.1:8188')}
+          <div data-ia-tr="direct">${chk('comfyRewriteHost', 'Rewrite localhost to the browser host (direct mode only)')}</div>
+          ${num('comfyTimeoutSec', 'Generation timeout (seconds)', 30, 1800)}
+          <div class="ia-grid2">
+            ${txt('comfyModel', 'Model (%model%)')}
+            ${txt('comfyClip', 'CLIP (%clip%)')}
+            ${txt('comfyVae', 'VAE (%vae%)')}
+            ${num('comfySteps', 'Steps (%steps%)', 1, 150)}
+            ${num('comfyCfg', 'CFG (%cfg%)', 0, 30, 0.1)}
+            ${txt('comfySampler', 'Sampler (%sampler%)')}
+            ${txt('comfyScheduler', 'Scheduler (%scheduler%)')}
+          </div>
+          <div class="ia-preset-bar">
+            <select id="ia_wf_select" class="text_pole"></select>
+            <button type="button" id="ia_wf_save" class="menu_button" title="Save preset"><i class="fa-solid fa-floppy-disk"></i></button>
+            <button type="button" id="ia_wf_add" class="menu_button" title="Save as new"><i class="fa-solid fa-plus"></i></button>
+            <button type="button" id="ia_wf_del" class="menu_button" title="Delete preset"><i class="fa-solid fa-trash"></i></button>
+          </div>
+          <textarea id="ia_wf_text" class="text_pole ia-mono" rows="8" spellcheck="false"></textarea>
+          <div id="ia_wf_badges" class="ia-badges"></div>
+          <button type="button" id="ia_test_comfy" class="menu_button"><i class="fa-solid fa-plug"></i> Test ComfyUI</button>
+        </div>
+        <div data-ia-img="sd_command" class="ia-group"><small class="ia-muted">Uses the Image Generation extension's own settings. Resolution, negative prompt and workflow below do not apply.</small></div>
+        <div class="ia-grid3">
+          ${num('resPortraitW', 'Portrait W', 64, 4096, 8)}${num('resPortraitH', 'Portrait H', 64, 4096, 8)}<span></span>
+          ${num('resLandscapeW', 'Land. W', 64, 4096, 8)}${num('resLandscapeH', 'Land. H', 64, 4096, 8)}<span></span>
+          ${num('resSquareW', 'Square W', 64, 4096, 8)}${num('resSquareH', 'Square H', 64, 4096, 8)}<span></span>
+        </div>
+      `)}
+
+      ${section('fa-file-code', 'Prompts', `
+        ${txt('stylePrefix', 'Style prefix')}
+        ${txt('defaultNegative', 'Default negative prompt')}
+        <label class="ia-field"><span>Evaluator instructions (edits apply to the current mode)</span>
+          <textarea id="ia_schema" class="text_pole ia-mono" rows="10" spellcheck="false"></textarea></label>
+        <div id="ia_schema_badges" class="ia-badges"></div>
+        <button type="button" id="ia_reset_schema" class="menu_button">Reset to default</button>
+      `)}
+
+      ${section('fa-images', 'Gallery and storage', `
+        ${chk('showBubble', 'Show the floating gallery bubble')}
+        ${chk('thumbnails', 'Create small thumbnails (much faster gallery on phones)')}
+        ${chk('deleteFilesOnRemove', 'Also delete image files from the server when removing from the gallery', 'Chat messages that still contain those images will show broken links.')}
+        <button type="button" id="ia_repair" class="menu_button"><i class="fa-solid fa-screwdriver-wrench"></i> Repair old images</button>
+        <small class="ia-muted">Images from v2.x were saved as links to 127.0.0.1:8188 and cannot load on other devices. Press this once <b>on the PC running ComfyUI</b> (ComfyUI must be running) to copy them onto the SillyTavern server.</small>
+      `)}
+    </div>
+  </div>
+</div>`;
+}
+
+// ---------------------------------------------------------------------------
+// Declarative binding: <input data-ia="key"> <-> settings[key]
+// ---------------------------------------------------------------------------
+function readValue(el) {
+    const type = el.dataset.type || (el.type === 'checkbox' ? 'bool' : 'text');
+    if (type === 'bool') return el.checked;
+    if (type === 'int' || type === 'float') {
+        const n = type === 'int' ? parseInt(el.value, 10) : parseFloat(el.value);
+        if (Number.isNaN(n)) return undefined;
+        const min = el.min !== '' ? Number(el.min) : -Infinity, max = el.max !== '' ? Number(el.max) : Infinity;
+        return clamp(n, min, max);
+    }
+    return el.value;
+}
+
+function bindFields() {
+    const s = getSettings();
+    document.querySelectorAll('#ia_main_container [data-ia]').forEach(el => {
+        const key = el.dataset.ia;
+        if (el.type === 'checkbox') el.checked = !!s[key];
+        else el.value = s[key] ?? '';
+        const evt = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'number') ? 'change' : 'input';
+        el.addEventListener(evt, () => {
+            const v = readValue(el);
+            if (v === undefined) { el.value = s[key] ?? ''; return; }
+            s[key] = v;
+            saveSettings();
+            onSettingChanged(key);
+        });
+    });
+}
+
+function onSettingChanged(key) {
+    if (key === 'agentMode') { refreshVisibility(); loadSchema(); }
+    if (['enabled', 'agentMode', 'mode2Inject', 'mode2InjectionText'].includes(key)) syncMode2Injection();
+    if (['llmProvider', 'imageBackend', 'comfyTransport'].includes(key)) refreshVisibility();
+    if (key === 'llmProvider') refreshProfiles();
+    if (key === 'showBubble') emit('ui');
+}
+
+const HINTS = {
+    mode1: 'Senses each reply locally (free), asks the LLM only when something visual happened, then illustrates. Cooldown prevents spam.',
+    mode2: 'Idle until the roleplay model writes an <image>/<scene> tag. No tag means no LLM call and no image.',
+    mode3: 'Illustrates the most visual beat every N assistant messages, with no decision step.'
 };
 
-// Double-tap guard for touch devices: ignores a second tap on gallery cards
-// within this window, preventing accidental double lightbox opens.
-const DOUBLE_TAP_GUARD_MS = 400;
-let lastGalleryTapAt = 0;
-
-function escapeHtml(str) {
-    return String(str ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
-export function resetGeneratingIndicator() {
-    $('#ia_gallery_bubble').removeClass('is-generating');
-    $('#ia_bubble_icon').removeClass('fa-wand-magic-sparkles fa-spin').addClass('fa-camera-retro');
-}
-
-export function promptReviewModal(pos, neg, ar, metadata, confirmCallback) {
-    $('#ia_rev_desc').val(metadata.description || '');
-    $('#ia_rev_positive').val(pos);
-    $('#ia_rev_negative').val(neg);
-    $('#ia_rev_ar').val(ar || 'portrait');
-    $('#ia_review_modal').fadeIn(150);
-
-    $('#ia_rev_confirm').off('click').on('click', () => {
-        $('#ia_review_modal').fadeOut(150);
-        metadata.description = $('#ia_rev_desc').val();
-        if (confirmCallback) {
-            confirmCallback($('#ia_rev_positive').val(), $('#ia_rev_negative').val(), $('#ia_rev_ar').val(), metadata);
-        }
-    });
-}
-
-export function showBatchCandidatePicker(results, description, selectCallback) {
-    const $grid = $('#ia_batch_grid').empty();
-    results.forEach((item, idx) => {
-        const $item = $(`
-            <div class="ia-batch-item" title="Click to insert Variation #${idx + 1}">
-                <img src="${item.cleanUrl}" />
-                <div style="padding: 6px; text-align: center; font-size: 0.85em; background: rgba(0,0,0,0.4);">
-                    <b>Variation #${idx + 1}</b>
-                </div>
-            </div>
-        `);
-        $item.on('click', async () => {
-            if (selectCallback) await selectCallback(item.cleanUrl, description);
-            $('#ia_batch_picker_modal').fadeOut(150);
-        });
-        $grid.append($item);
-    });
-    $('#ia_batch_picker_modal').fadeIn(150);
-}
-
-function updateMacroBadges() {
-    const schemaText = $('#ia_schema_editor').val() || '';
-    const workflowText = $('#ia_comfy_workflow').val() || '';
-
-    const schemaTokens = [
-        { name: 'decision', desc: 'Output JSON key for yes/no decision' },
-        { name: 'description', desc: 'Output JSON key for narrative vision memory' },
-        { name: 'prompt', desc: 'Output JSON key for image generation prompt' },
-        { name: 'negativePrompt', desc: 'Output JSON key for negative prompt tags' },
-        { name: '<assistant_response>', desc: 'Target anchor for the latest assistant message' }
-    ];
-
-    const $schemaBadges = $('#ia_schema_macro_badges').empty();
-    schemaTokens.forEach(t => {
-        const active = schemaText.includes(t.name);
-        $schemaBadges.append(`
-            <span class="ia-badge ${active ? 'active' : 'inactive'}" title="${t.desc}">
-                ${active ? '✓' : '✗'} ${t.name}
-            </span>
-        `);
-    });
-
-    const workflowTokens = [
-        { name: '%prompt%', desc: 'Injected image generation tags' },
-        { name: '%negative_prompt%', desc: 'Injected negative prompt tags' },
-        { name: '%seed%', desc: 'Injected random seed number' },
-        { name: '%steps%', desc: 'Injected sampler step count' },
-        { name: '%cfg%', desc: 'Injected CFG scale' },
-        { name: '%sampler%', desc: 'Injected sampler algorithm' },
-        { name: '%scheduler%', desc: 'Injected scheduler name' },
-        { name: '%denoise%', desc: 'Injected denoise strength (1.0)' },
-        { name: '%width%', desc: 'Injected aspect ratio width' },
-        { name: '%height%', desc: 'Injected aspect ratio height' },
-        { name: '%model%', desc: 'Injected checkpoint/safetensors name' },
-        { name: '%clip%', desc: 'Injected GGUF/CLIP model name' },
-        { name: '%vae%', desc: 'Injected VAE name' }
-    ];
-
-    const $wfBadges = $('#ia_workflow_macro_badges').empty();
-    workflowTokens.forEach(t => {
-        const active = workflowText.includes(t.name);
-        $wfBadges.append(`
-            <span class="ia-badge ${active ? 'active' : 'inactive'}" title="${t.desc}">
-                ${active ? '✓' : '✗'} ${t.name}
-            </span>
-        `);
-    });
-}
-
-export function setupUI() {
-    if ($('#ia_main_container').length > 0) return;
-
-    const settingsHtml = `
-    <div id="ia_main_container" class="illustration-agent-settings" style="margin-bottom: 12px;">
-        <div class="inline-drawer">
-            <div id="ia_drawer_toggle" class="ia-drawer-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding: 8px 10px;">
-                <b><i class="fa-solid fa-palette" style="margin-right: 6px; color: #ff7675;"></i>Doublesub Illustration Agent</b>
-                <div id="ia_drawer_icon" class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-            </div>
-
-            <div id="ia_drawer_content" class="inline-drawer-content" style="display: none; padding: 12px;">
-                <div class="ia-section">
-                    <div class="ia-section-title"><i class="fa-solid fa-network-wired"></i> Diagnostics</div>
-                    <div style="display: flex; gap: 8px;">
-                        <button type="button" id="ia_ping_llm_btn" class="menu_button" style="flex: 1;"><i class="fa-solid fa-brain"></i> Test LLM</button>
-                        <button type="button" id="ia_ping_image_btn" class="menu_button" style="flex: 1;"><i class="fa-solid fa-wand-magic-sparkles"></i> Test ComfyUI</button>
-                    </div>
-                </div>
-
-                <div class="ia-section">
-                    <div class="ia-section-title"><i class="fa-solid fa-sliders"></i> Core Pipeline Settings</div>
-                    <div class="ia-row-inline">
-                        <label class="checkbox_label" style="cursor: pointer;" title="Master switch: Disables the entire extension.">
-                            <input type="checkbox" id="ia_enabled">
-                            <span><b>Enable SillyTavern Illustration Agent</b> (Master Toggle)</span>
-                        </label>
-                        <button type="button" id="ia_open_gallery_btn" class="menu_button" style="padding: 3px 10px;"><i class="fa-solid fa-images"></i> Gallery Window</button>
-                    </div>
-
-                    <div class="ia-row">
-                        <label for="ia_image_backend"><b>Generation Backend:</b></label>
-                        <select id="ia_image_backend" class="text_pole">
-                            <option value="comfyui_direct">Direct ComfyUI API (Full Workflow Pipeline)</option>
-                            <option value="slash_imagine">SillyTavern Built-in /imagine Slash Command</option>
-                        </select>
-                    </div>
-
-                    <div class="ia-row">
-                        <label for="ia_agent_mode"><b>Agent Operation Mode:</b></label>
-                        <select id="ia_agent_mode" class="text_pole">
-                            <option value="mode1">Mode 1: Autonomous Evaluator (Selfie & Photography Triggered)</option>
-                            <option value="mode2">Mode 2: XML Tag-Triggered Only (&lt;image&gt; / &lt;scene&gt;)</option>
-                            <option value="mode3">Mode 3: Interval-Forced (Triggers every X messages blindly)</option>
-                        </select>
-                        <small id="ia_mode_hint" style="opacity: 0.7; margin-top: 2px;"></small>
-                    </div>
-
-                    <div class="ia-row-inline" id="ia_fast_gate_row">
-                        <label class="checkbox_label" title="Mode 1 only: instantly skips the LLM evaluation when the recent messages contain no visual or photography cues. Massively reduces decision latency on pure-dialogue turns.">
-                            <input type="checkbox" id="ia_fast_gate">
-                            <span>Fast Pre-Filter (skip LLM when no visual cues — recommended)</span>
-                        </label>
-                    </div>
-
-                    <div class="ia-row" id="ia_mode2_instructions" style="display: none; margin-top: 8px; border-left: 2px solid #2ecc71; padding-left: 8px;">
-                        <label><b>Mode 2 System Prompt Injection (Editable):</b></label>
-                        <small style="opacity: 0.8; display: block; margin-bottom: 4px;">Copy this instruction into your character's System Prompt, Scenario, or Author's Note.</small>
-                        <textarea id="ia_mode2_injection" class="text_pole" rows="5" style="font-size: 0.85em; font-family: monospace;"></textarea>
-                    </div>
-
-                    <div class="ia-row">
-                        <label for="ia_delivery_mode"><b>Roleplay Output Delivery:</b></label>
-                        <select id="ia_delivery_mode" class="text_pole">
-                            <option value="attached">Append to Assistant Turn (Permanent & In-Context)</option>
-                            <option value="separate">Separate Comment Card (Hidden from LLM Context)</option>
-                        </select>
-                    </div>
-
-                    <div id="ia_interval_row" class="ia-row">
-                        <label for="ia_trigger_interval"><b>Trigger Interval (For Mode 3):</b></label>
-                        <input type="number" id="ia_trigger_interval" class="text_pole" min="1" max="20" value="3">
-                        <small style="opacity: 0.7;">The AI will generate an image every X messages.</small>
-                    </div>
-
-                    <div class="ia-row" id="ia_lookback_row">
-                        <label for="ia_lookback"><b>Lookback History (Forced Context Window):</b></label>
-                        <input type="number" id="ia_lookback" class="text_pole" min="1" max="10" value="3">
-                        <label class="checkbox_label" style="margin-top: 4px;">
-                            <input type="checkbox" id="ia_include_thinking">
-                            <span>Include &lt;think&gt; reasoning blocks in context</span>
-                        </label>
-                        <small style="opacity: 0.7;">The agent is strictly sandboxed to read only the last X messages for evaluation.</small>
-                    </div>
-
-                    <div class="ia-row">
-                        <label for="ia_batch_count"><b>Images per generation (Batch):</b></label>
-                        <input type="number" id="ia_batch_count" class="text_pole" min="1" max="4" value="1">
-                    </div>
-
-                    <div class="ia-row-inline">
-                        <label class="checkbox_label">
-                            <input type="checkbox" id="ia_interactive_review">
-                            <span>Review & Edit Prompts Before Generating</span>
-                        </label>
-                    </div>
-                </div>
-
-                <div class="ia-section">
-                    <div class="ia-section-title"><i class="fa-solid fa-crop-simple"></i> Resolution (W × H)</div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                        <div>
-                            <label><small>Portrait</small></label>
-                            <div style="display: flex; gap: 4px;">
-                                <input type="number" id="ia_res_port_w" class="text_pole" placeholder="832">
-                                <input type="number" id="ia_res_port_h" class="text_pole" placeholder="1216">
-                            </div>
-                        </div>
-                        <div>
-                            <label><small>Landscape</small></label>
-                            <div style="display: flex; gap: 4px;">
-                                <input type="number" id="ia_res_land_w" class="text_pole" placeholder="1216">
-                                <input type="number" id="ia_res_land_h" class="text_pole" placeholder="832">
-                            </div>
-                        </div>
-                        <div>
-                            <label><small>Square</small></label>
-                            <div style="display: flex; gap: 4px;">
-                                <input type="number" id="ia_res_sq_w" class="text_pole" placeholder="1024">
-                                <input type="number" id="ia_res_sq_h" class="text_pole" placeholder="1024">
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="ia-section">
-                    <div class="ia-section-title"><i class="fa-solid fa-wand-magic-sparkles"></i> ComfyUI Workflow & Model Inputs</div>
-                    <div class="ia-row">
-                        <label><b>Workflow Preset:</b></label>
-                        <div class="ia-preset-bar">
-                            <select id="ia_workflow_preset_select" class="text_pole"></select>
-                            <button type="button" id="ia_wf_preset_save_btn" class="menu_button" title="Save Preset"><i class="fa-solid fa-floppy-disk"></i></button>
-                            <button type="button" id="ia_wf_preset_add_btn" class="menu_button" title="Save as New"><i class="fa-solid fa-plus"></i></button>
-                            <button type="button" id="ia_wf_preset_del_btn" class="menu_button" title="Delete Preset"><i class="fa-solid fa-trash"></i></button>
-                        </div>
-                    </div>
-                    <div class="ia-row">
-                        <label><b>ComfyUI Host URL:</b></label>
-                        <input type="text" id="ia_comfy_url" class="text_pole" placeholder="http://127.0.0.1:8188">
-                    </div>
-                    <div class="ia-row-inline">
-                        <label class="checkbox_label" title="If you access SillyTavern from another device, rewrite 127.0.0.1 in the ComfyUI URL to match the browser host.">
-                            <input type="checkbox" id="ia_comfy_rewrite_host">
-                            <span>Auto-rewrite localhost → browser host for ComfyUI URL</span>
-                        </label>
-                    </div>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 6px;">
-                        <div>
-                            <label><small>Model (%model%)</small></label>
-                            <input type="text" id="ia_comfy_model" class="text_pole">
-                        </div>
-                        <div>
-                            <label><small>CLIP / GGUF (%clip%)</small></label>
-                            <input type="text" id="ia_comfy_clip" class="text_pole">
-                        </div>
-                        <div>
-                            <label><small>VAE (%vae%)</small></label>
-                            <input type="text" id="ia_comfy_vae" class="text_pole">
-                        </div>
-                        <div>
-                            <label><small>Steps (%steps%)</small></label>
-                            <input type="number" id="ia_comfy_steps" class="text_pole" value="20">
-                        </div>
-                        <div>
-                            <label><small>CFG Scale (%cfg%)</small></label>
-                            <input type="number" step="0.1" id="ia_comfy_cfg" class="text_pole" value="4.5">
-                        </div>
-                        <div>
-                            <label><small>Sampler (%sampler%)</small></label>
-                            <input type="text" id="ia_comfy_sampler" class="text_pole" value="euler_ancestral">
-                        </div>
-                        <div>
-                            <label><small>Scheduler (%scheduler%)</small></label>
-                            <input type="text" id="ia_comfy_scheduler" class="text_pole" value="normal">
-                        </div>
-                    </div>
-                    <div class="ia-row">
-                        <label><b>ComfyUI API Workflow (JSON):</b></label>
-                        <textarea id="ia_comfy_workflow" class="text_pole" rows="8" style="font-family: monospace; font-size: 0.8em;"></textarea>
-                    </div>
-                    <label style="font-size: 0.8em; opacity: 0.8;"><b>Workflow Macro Status:</b></label>
-                    <div id="ia_workflow_macro_badges" class="ia-macro-container"></div>
-                </div>
-
-                <div class="ia-section">
-                    <div class="ia-section-title"><i class="fa-solid fa-file-code"></i> Active Prompt (Isolated per Mode)</div>
-                    <div class="ia-row">
-                        <label><b>Style Prefix:</b></label>
-                        <input type="text" id="ia_style_prefix" class="text_pole">
-                    </div>
-                    <div class="ia-row">
-                        <label><b>Default Negative Prompt:</b></label>
-                        <input type="text" id="ia_default_negative" class="text_pole">
-                    </div>
-                    <div class="ia-row">
-                        <label><b>System Instruction / Schema (Edits save exclusively to current mode):</b></label>
-                        <textarea id="ia_schema_editor" class="text_pole" rows="11" style="font-family: monospace; font-size: 0.8em;"></textarea>
-                    </div>
-                    <label style="font-size: 0.8em; opacity: 0.8;"><b>Schema Token Validation:</b></label>
-                    <div id="ia_schema_macro_badges" class="ia-macro-container"></div>
-                </div>
-
-                <div class="ia-section">
-                    <div class="ia-section-title"><i class="fa-solid fa-brain"></i> Agent Evaluator LLM</div>
-                    <div class="ia-row">
-                        <label for="ia_llm_provider"><b>Evaluator Source:</b></label>
-                        <select id="ia_llm_provider" class="text_pole">
-                            <option value="current">Current Chat LLM (Isolated — system prompt stripped)</option>
-                            <option value="custom">Custom API (OpenAI / Claude Proxy / BananaPro)</option>
-                        </select>
-                    </div>
-                    <div id="ia_custom_llm_fields" style="display: none;">
-                        <div class="ia-row">
-                            <label><b>API Base URL:</b></label>
-                            <input type="text" id="ia_custom_llm_url" class="text_pole" placeholder="https://api.openai.com/v1">
-                        </div>
-                        <div class="ia-row">
-                            <label><b>API Key:</b></label>
-                            <input type="password" id="ia_custom_llm_key" class="text_pole">
-                        </div>
-                        <div class="ia-row">
-                            <label><b>Model:</b></label>
-                            <input type="text" id="ia_custom_llm_model" class="text_pole" placeholder="gpt-4o-mini">
-                        </div>
-                    </div>
-                </div>
-
-                <button type="button" id="ia_manual_eval_btn" class="menu_button" style="width: 100%; margin-top: 6px;">
-                    <i class="fa-solid fa-bolt"></i> Evaluate & Illustrate Scene Now
-                </button>
-            </div>
-        </div>
-    </div>
-    `;
-
-    const $mount = $('#ia_settings_mount');
-    if ($mount.length > 0) {
-        $mount.empty().append(settingsHtml);
-    } else {
-        const container = $('#extensions_settings').length ? $('#extensions_settings') : $('#extensions_settings2');
-        container.append(settingsHtml);
-    }
-
-    if ($('#ia_gallery_bubble').length === 0) {
-        const bodyFloatingHtml = `
-        <div id="ia_gallery_bubble" title="Drag anywhere or tap to open gallery">
-            <i id="ia_bubble_icon" class="fa-solid fa-camera-retro"></i>
-            <div id="ia_gallery_bubble_badge">0</div>
-        </div>
-
-        <div id="ia_review_modal" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 500px; max-width: 90vw; background: var(--SmartThemeBlurTintColor, #202028); border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 10px; z-index: 100000; padding: 16px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.85);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <b><i class="fa-solid fa-pen-to-square"></i> Review Scene Illustration</b>
-                <div id="ia_close_review" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
-            </div>
-            <div class="ia-row">
-                <label><b>Narrative Description:</b></label>
-                <textarea id="ia_rev_desc" class="text_pole" rows="2"></textarea>
-            </div>
-            <div class="ia-row">
-                <label><b>Positive Prompt (Image Generator):</b></label>
-                <textarea id="ia_rev_positive" class="text_pole" rows="3"></textarea>
-            </div>
-            <div class="ia-row">
-                <label><b>Negative Prompt:</b></label>
-                <textarea id="ia_rev_negative" class="text_pole" rows="2"></textarea>
-            </div>
-            <div class="ia-row">
-                <label><b>Aspect Ratio:</b></label>
-                <select id="ia_rev_ar" class="text_pole">
-                    <option value="portrait">Portrait</option>
-                    <option value="landscape">Landscape</option>
-                    <option value="square">Square</option>
-                </select>
-            </div>
-            <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;">
-                <button type="button" id="ia_rev_cancel" class="menu_button">Cancel</button>
-                <button type="button" id="ia_rev_confirm" class="menu_button" style="background: #27ae60; color: white;">Generate Now</button>
-            </div>
-        </div>
-
-        <div id="ia_batch_picker_modal" style="display: none;">
-            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 8px;">
-                <b><i class="fa-solid fa-images"></i> Choose Image for Roleplay</b>
-                <div id="ia_close_batch_picker" style="cursor: pointer;"><i class="fa-solid fa-xmark"></i></div>
-            </div>
-            <div id="ia_batch_grid" class="ia-batch-grid"></div>
-        </div>
-
-        <div id="ia_gallery_modal" style="display: none;">
-            <div class="ia-gallery-header">
-                <b><i class="fa-solid fa-images" style="color: #ff7675; margin-right: 6px;"></i>Illustration Gallery</b>
-                <div class="ia-gallery-search-wrap">
-                    <i class="fa-solid fa-magnifying-glass"></i>
-                    <input type="text" id="ia_gallery_search" placeholder="Search name or description..." autocomplete="off" />
-                    <button type="button" id="ia_gallery_search_clear" title="Clear search"><i class="fa-solid fa-xmark"></i></button>
-                </div>
-                <div class="ia-gallery-controls">
-                    <button type="button" id="ia_win_select_btn" class="ia-win-btn" title="Select Images"><i class="fa-solid fa-check-square"></i> Select</button>
-                    <button type="button" id="ia_win_delete_btn" class="ia-win-btn" style="display:none; color:#e74c3c;" title="Delete Selected"><i class="fa-solid fa-trash"></i> Delete Selected</button>
-                    <button type="button" id="ia_win_min_btn" class="ia-win-btn" title="Minimize to Bubble"><i class="fa-solid fa-minus"></i></button>
-                    <button type="button" id="ia_win_close_btn" class="ia-win-btn" title="Close"><i class="fa-solid fa-xmark"></i></button>
-                </div>
-            </div>
-            <div class="ia-gallery-body">
-                <div id="ia_gallery_nav" class="ia-gallery-sidebar"></div>
-                <div id="ia_gallery_content" class="ia-gallery-grid"></div>
-            </div>
-        </div>
-
-        <div id="ia_lightbox_backdrop" style="display: none;"></div>
-
-        <div id="ia_lightbox_modal" style="display: none;">
-            <div class="ia-lightbox-header">
-                <b id="ia_lightbox_title">Image View</b>
-                <div id="ia_close_lightbox" style="cursor: pointer; padding: 4px 10px;"><i class="fa-solid fa-xmark"></i></div>
-            </div>
-            <div class="ia-lightbox-content">
-                <img id="ia_lightbox_img" src="" />
-            </div>
-            <div class="ia-lightbox-footer">
-                <div id="ia_lightbox_desc" class="ia-lightbox-desc"></div>
-                <div class="ia-lightbox-actions">
-                    <button type="button" id="ia_lb_fav_btn" class="menu_button"><i class="fa-regular fa-heart"></i> Favorite</button>
-                    <button type="button" id="ia_lb_show_btn" class="menu_button" style="background: #3498db; color: white;"><i class="fa-solid fa-hand-sparkles"></i> Show to Character</button>
-                    <button type="button" id="ia_lb_dl_btn" class="menu_button" style="background: #2ecc71; color: white;"><i class="fa-solid fa-download"></i> Save</button>
-                </div>
-            </div>
-        </div>
-        `;
-        $('body').append(bodyFloatingHtml);
-    }
-
-    bindSettingsEvents();
-    setupAndroidBubble();
-    updateMacroBadges();
-
-    const initialGalleryCount = getGalleryDb().length;
-    $('#ia_gallery_bubble_badge').text(initialGalleryCount > 99 ? '99+' : initialGalleryCount);
-}
-
-function updateModeHint(mode) {
+function refreshVisibility() {
     const s = getSettings();
-    const hints = {
-        mode1: 'Strict Photography Mode: Triggers ONLY when taking selfies, snapping photos, or showing pictures.',
-        mode2: 'Trigger-word driven: fires ONLY when <image>/<scene> tags appear in the response — no decision step, tags convert straight into prompts.',
-        mode3: 'Bypasses the thinking step: unconditionally generates image prompts every X assistant messages.'
-    };
-    $('#ia_mode_hint').text(hints[mode] || '');
-
-    if (mode === 'mode1') {
-        $('#ia_mode2_instructions').slideUp(150);
-        $('#ia_interval_row').slideUp(150);
-        $('#ia_fast_gate_row').slideDown(150);
-        $('#ia_schema_editor').val(s.promptMode1);
-    } else if (mode === 'mode2') {
-        $('#ia_mode2_instructions').slideDown(150);
-        $('#ia_interval_row').slideUp(150);
-        $('#ia_fast_gate_row').slideUp(150);
-        $('#ia_schema_editor').val(s.promptMode2);
-    } else if (mode === 'mode3') {
-        $('#ia_mode2_instructions').slideUp(150);
-        $('#ia_interval_row').slideDown(150);
-        $('#ia_fast_gate_row').slideUp(150);
-        $('#ia_schema_editor').val(s.promptMode3);
-    }
-    updateMacroBadges();
+    $('#ia_mode_hint').text(HINTS[s.agentMode] || '');
+    $('[data-ia-mode]').each(function () { $(this).toggle($(this).data('iaMode') === s.agentMode); });
+    $('[data-ia-llm]').each(function () { $(this).toggle($(this).data('iaLlm') === s.llmProvider); });
+    $('[data-ia-img]').each(function () { $(this).toggle($(this).data('iaImg') === s.imageBackend); });
+    $('[data-ia-tr]').each(function () { $(this).toggle($(this).data('iaTr') === s.comfyTransport); });
 }
 
-// ---------------------------------------------------------------------------
-// THIS is where all the settings panel bindings live. Add new checkboxes /
-// inputs here — never in settings.html.
-// ---------------------------------------------------------------------------
-function bindSettingsEvents() {
+function refreshProfiles() {
     const s = getSettings();
-
-    $('#ia_drawer_toggle').off('click').on('click', function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        const $content = $('#ia_drawer_content');
-        const $icon = $('#ia_drawer_icon');
-        $content.stop(true, true).slideToggle(200);
-        $icon.toggleClass('down up');
-    });
-
-    $('#ia_drawer_content').on('click', (e) => e.stopPropagation());
-
-    refreshPresetDropdowns();
-
-    $('#ia_enabled').prop('checked', !!s.enabled).on('change', function () { s.enabled = $(this).is(':checked'); saveSettings(); });
-
-    $('#ia_image_backend').val(s.imageBackend || 'comfyui_direct').on('change', function () {
-        s.imageBackend = $(this).val();
-        saveSettings();
-    });
-
-    $('#ia_agent_mode').val(s.agentMode || 'mode1').on('change', function () {
-        s.agentMode = $(this).val();
-        updateModeHint(s.agentMode);
-        saveSettings();
-    });
-    updateModeHint(s.agentMode || 'mode1');
-
-    $('#ia_fast_gate').prop('checked', s.fastGate !== false).on('change', function () {
-        s.fastGate = $(this).is(':checked');
-        saveSettings();
-    });
-
-    $('#ia_mode2_injection').val(s.mode2InjectionText).on('input', function() { s.mode2InjectionText = $(this).val(); saveSettings(); });
-    $('#ia_delivery_mode').val(s.deliveryMode || 'attached').on('change', function () { s.deliveryMode = $(this).val(); saveSettings(); });
-    $('#ia_trigger_interval').val(s.triggerInterval || 3).on('change', function () { s.triggerInterval = Math.max(1, parseInt($(this).val()) || 3); saveSettings(); });
-    $('#ia_interactive_review').prop('checked', !!s.interactiveReview).on('change', function () { s.interactiveReview = $(this).is(':checked'); saveSettings(); });
-    $('#ia_batch_count').val(s.batchCount || 1).on('change', function () { s.batchCount = Math.max(1, parseInt($(this).val()) || 1); saveSettings(); });
-
-    $('#ia_lookback').val(s.lookback || 3).on('change', function () { s.lookback = Math.max(1, parseInt($(this).val()) || 3); saveSettings(); });
-    $('#ia_include_thinking').prop('checked', !!s.includeThinking).on('change', function () { s.includeThinking = $(this).is(':checked'); saveSettings(); });
-
-    $('#ia_style_prefix').val(s.stylePrefix).on('input', function () { s.stylePrefix = $(this).val(); saveSettings(); });
-    $('#ia_default_negative').val(s.defaultNegative).on('input', function () { s.defaultNegative = $(this).val(); saveSettings(); });
-
-    $('#ia_schema_editor').val(
-        s.agentMode === 'mode1' ? s.promptMode1 : (s.agentMode === 'mode2' ? s.promptMode2 : s.promptMode3)
-    ).on('input', function () {
-        const val = $(this).val();
-        if (s.agentMode === 'mode1') s.promptMode1 = val;
-        if (s.agentMode === 'mode2') s.promptMode2 = val;
-        if (s.agentMode === 'mode3') s.promptMode3 = val;
-        updateMacroBadges();
-        saveSettings();
-    });
-
-    $('#ia_res_port_w').val(s.resPortraitW).on('change', function () { s.resPortraitW = parseInt($(this).val()) || 832; saveSettings(); });
-    $('#ia_res_port_h').val(s.resPortraitH).on('change', function () { s.resPortraitH = parseInt($(this).val()) || 1216; saveSettings(); });
-    $('#ia_res_land_w').val(s.resLandscapeW).on('change', function () { s.resLandscapeW = parseInt($(this).val()) || 1216; saveSettings(); });
-    $('#ia_res_land_h').val(s.resLandscapeH).on('change', function () { s.resLandscapeH = parseInt($(this).val()) || 832; saveSettings(); });
-    $('#ia_res_sq_w').val(s.resSquareW).on('change', function () { s.resSquareW = parseInt($(this).val()) || 1024; saveSettings(); });
-    $('#ia_res_sq_h').val(s.resSquareH).on('change', function () { s.resSquareH = parseInt($(this).val()) || 1024; saveSettings(); });
-
-    $('#ia_comfy_model').val(s.comfyModel).on('input', function () { s.comfyModel = $(this).val(); saveSettings(); });
-    $('#ia_comfy_clip').val(s.comfyClip).on('input', function () { s.comfyClip = $(this).val(); saveSettings(); });
-    $('#ia_comfy_vae').val(s.comfyVae).on('input', function () { s.comfyVae = $(this).val(); saveSettings(); });
-
-    $('#ia_comfy_steps').val(s.comfySteps).on('change', function () { s.comfySteps = parseInt($(this).val()) || 20; saveSettings(); });
-    $('#ia_comfy_cfg').val(s.comfyCfg).on('change', function () { s.comfyCfg = parseFloat($(this).val()) || 4.5; saveSettings(); });
-    $('#ia_comfy_sampler').val(s.comfySampler).on('input', function () { s.comfySampler = $(this).val(); saveSettings(); });
-    $('#ia_comfy_scheduler').val(s.comfyScheduler).on('input', function () { s.comfyScheduler = $(this).val(); saveSettings(); });
-    $('#ia_comfy_url').val(s.comfyUrl).on('input', function () { s.comfyUrl = $(this).val(); saveSettings(); });
-
-    $('#ia_comfy_rewrite_host')
-        .prop('checked', !!s.comfyRewriteHost)
-        .on('change', function () { s.comfyRewriteHost = $(this).is(':checked'); saveSettings(); });
-
-    $('#ia_comfy_workflow').val(s.activeWorkflowText).on('input', function () { s.activeWorkflowText = $(this).val(); updateMacroBadges(); saveSettings(); });
-
-    $('#ia_llm_provider').val(s.llmProvider).on('change', function () {
-        s.llmProvider = $(this).val();
-        $('#ia_custom_llm_fields').toggle(s.llmProvider === 'custom');
-        saveSettings();
-    });
-    $('#ia_custom_llm_fields').toggle(s.llmProvider === 'custom');
-    $('#ia_custom_llm_url').val(s.customLlmUrl).on('input', function () { s.customLlmUrl = $(this).val(); saveSettings(); });
-    $('#ia_custom_llm_key').val(s.customLlmKey).on('input', function () { s.customLlmKey = $(this).val(); saveSettings(); });
-    $('#ia_custom_llm_model').val(s.customLlmModel).on('input', function () { s.customLlmModel = $(this).val(); saveSettings(); });
-
-    $('#ia_manual_eval_btn').on('click', () => runEvaluation(true));
-    $('#ia_open_gallery_btn').on('click', openGallery);
-    $('#ia_win_min_btn').on('click', () => { $('#ia_gallery_modal').fadeOut(150); $('#ia_gallery_bubble').fadeIn(200); });
-    $('#ia_win_close_btn').on('click', () => { $('#ia_gallery_modal').fadeOut(150); });
-    $('#ia_close_review, #ia_rev_cancel').on('click', () => $('#ia_review_modal').fadeOut(150));
-    $('#ia_close_batch_picker').on('click', () => $('#ia_batch_picker_modal').fadeOut(150));
-    $('#ia_close_lightbox').on('click', closeLightbox);
-    $('#ia_lightbox_backdrop').on('click', closeLightbox);
-
-    // --- Gallery search (character name + description) ---------------------
-    $('#ia_gallery_search').on('input', function () {
-        galleryState.searchQuery = $(this).val();
-        $('#ia_gallery_search_clear').toggle(!!galleryState.searchQuery.trim());
-        renderGalleryContent(galleryState.lastFilterChar, galleryState.lastFilterType);
-    });
-    $('#ia_gallery_search_clear').on('click', function () {
-        $('#ia_gallery_search').val('');
-        galleryState.searchQuery = '';
-        $(this).hide();
-        renderGalleryContent(galleryState.lastFilterChar, galleryState.lastFilterType);
-        $('#ia_gallery_search').trigger('focus');
-    });
-
-    $('#ia_ping_llm_btn').on('click', async () => {
-        toastr.info('Pinging LLM...', 'Diagnostics');
-        const t0 = performance.now();
-        try {
-            const r = await queryAgentLLM('Reply with the word READY');
-            const ms = Math.round(performance.now() - t0);
-            toastr.success(`LLM is online! (${ms}ms) Response: ${(r || '').slice(0, 30)}`, 'Diagnostics');
-        } catch (e) {
-            toastr.error(`LLM Connection Failed: ${e.message}`, 'Diagnostics');
-        }
-    });
-
-    $('#ia_ping_image_btn').on('click', async () => {
-        const baseUrl = getEffectiveComfyUrl();
-        toastr.info('Pinging ComfyUI...', 'Diagnostics');
-        const t0 = performance.now();
-        try {
-            const res = await fetch(`${baseUrl}/system_stats`);
-            const ms = Math.round(performance.now() - t0);
-            if (res.ok) toastr.success(`ComfyUI Online at ${baseUrl} (${ms}ms)`, 'Diagnostics');
-            else throw new Error(`HTTP ${res.status}`);
-        } catch (e) {
-            toastr.error(`ComfyUI Unreachable at ${baseUrl}: ${e.message}`, 'Diagnostics');
-        }
-    });
-
-    $('#ia_workflow_preset_select').on('change', function () { switchWorkflowPreset($(this).val()); });
-    $('#ia_wf_preset_save_btn').on('click', () => saveCurrentWorkflowPreset());
-    $('#ia_wf_preset_add_btn').on('click', () => addNewWorkflowPreset());
-    $('#ia_wf_preset_del_btn').on('click', () => deleteCurrentWorkflowPreset());
-
-    $('#ia_win_select_btn').on('click', function() {
-        galleryState.selectionMode = !galleryState.selectionMode;
-        if (galleryState.selectionMode) {
-            $(this).html('<i class="fa-solid fa-xmark"></i> Cancel Select');
-            $('#ia_win_delete_btn').show();
-        } else {
-            $(this).html('<i class="fa-solid fa-check-square"></i> Select');
-            $('#ia_win_delete_btn').hide();
-            galleryState.selectedIds.clear();
-            renderGalleryContent(galleryState.lastFilterChar, galleryState.lastFilterType);
-        }
-    });
-
-    $('#ia_win_delete_btn').on('click', function() {
-        if (galleryState.selectedIds.size === 0) return;
-        if (confirm(`Delete ${galleryState.selectedIds.size} selected image(s)?`)) {
-            const idsToDelete = Array.from(galleryState.selectedIds);
-            deleteGalleryRecords(idsToDelete);
-            galleryState.selectedIds.clear();
-            galleryState.selectionMode = false;
-            $('#ia_win_select_btn').html('<i class="fa-solid fa-check-square"></i> Select');
-            $(this).hide();
-            renderGalleryContent(galleryState.lastFilterChar, galleryState.lastFilterType);
-            toastr.success('Deleted selected images.', 'Doublesub');
-        }
-    });
+    const profiles = getCtx().extensionSettings?.connectionManager?.profiles || [];
+    const $sel = $('[data-ia="connectionProfile"]').empty().append('<option value="">(none)</option>');
+    profiles.forEach(p => $sel.append(`<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}</option>`));
+    $sel.val(s.connectionProfile || '');
 }
 
-function refreshPresetDropdowns() {
+// ---- prompt editor (per mode) ------------------------------------------------
+const schemaKey = () => ({ mode1: 'promptMode1', mode2: 'promptMode2', mode3: 'promptMode3' }[getSettings().agentMode]);
+
+function loadSchema() { $('#ia_schema').val(getSettings()[schemaKey()]); updateBadges(); }
+
+function badge(label, ok, hint) {
+    return `<span class="ia-badge ${ok ? 'active' : 'inactive'}" title="${escapeHtml(hint)}">${ok ? '✓' : '✗'} ${escapeHtml(label)}</span>`;
+}
+
+function updateBadges() {
+    const schema = $('#ia_schema').val() || '';
+    $('#ia_schema_badges').html(['decision', 'description', 'prompt', 'negativePrompt', 'aspectRatio']
+        .map(k => badge(k, schema.includes(k), 'JSON key the evaluator must return')).join(''));
+
+    const wf = $('#ia_wf_text').val() || '';
+    let valid = true;
+    try { JSON.parse(wf); } catch { valid = false; }
+    const macros = ['%prompt%', '%negative_prompt%', '%seed%', '%steps%', '%cfg%', '%sampler%', '%scheduler%', '%denoise%', '%width%', '%height%', '%model%', '%clip%', '%vae%'];
+    $('#ia_wf_badges').html(badge('valid JSON', valid, 'The workflow must parse') + macros.map(m => badge(m, wf.includes(m), 'Workflow macro')).join(''));
+}
+
+// ---- workflow presets ---------------------------------------------------------
+function refreshPresets() {
     const s = getSettings();
-    const $wSel = $('#ia_workflow_preset_select').empty();
-    Object.keys(s.workflowPresets).forEach(name => {
-        $wSel.append(`<option value="${name}">${name}</option>`);
+    $('#ia_wf_select').empty();
+    Object.keys(s.workflowPresets).forEach(n => $('#ia_wf_select').append(`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`));
+    $('#ia_wf_select').val(s.selectedWorkflowPreset);
+    $('#ia_wf_text').val(s.activeWorkflowText);
+}
+
+function workflowTextValid() {
+    try { JSON.parse($('#ia_wf_text').val()); return true; }
+    catch (e) { notify('error', 'Workflow is not valid JSON: ' + e.message); return false; }
+}
+
+function bindWorkflow() {
+    const s = getSettings();
+    $('#ia_wf_text').on('input', function () { s.activeWorkflowText = $(this).val(); saveSettings(); updateBadges(); });
+    $('#ia_wf_select').on('change', function () {
+        const n = $(this).val();
+        if (!s.workflowPresets[n]) return;
+        s.selectedWorkflowPreset = n; s.activeWorkflowText = s.workflowPresets[n];
+        $('#ia_wf_text').val(s.activeWorkflowText); updateBadges(); saveSettings();
     });
-    $wSel.val(s.selectedWorkflowPreset);
-}
-
-function switchWorkflowPreset(name) {
-    const s = getSettings();
-    if (s.workflowPresets[name]) {
-        s.selectedWorkflowPreset = name;
-        s.activeWorkflowText = s.workflowPresets[name];
-        $('#ia_comfy_workflow').val(s.activeWorkflowText);
-        $('#ia_workflow_preset_select').val(name);
-        updateMacroBadges();
-        saveSettings();
-        toastr.info(`Loaded workflow: ${name}`, 'Presets');
-    }
-}
-
-function saveCurrentWorkflowPreset() {
-    const s = getSettings();
-    const name = s.selectedWorkflowPreset;
-    s.workflowPresets[name] = $('#ia_comfy_workflow').val();
-    s.activeWorkflowText = s.workflowPresets[name];
-    saveSettings();
-    toastr.success(`Saved workflow preset "${name}"`, 'Presets');
-}
-
-function addNewWorkflowPreset() {
-    const name = prompt('Enter a name for the new Workflow Preset:');
-    if (!name) return;
-    const s = getSettings();
-    s.workflowPresets[name] = $('#ia_comfy_workflow').val();
-    s.selectedWorkflowPreset = name;
-    s.activeWorkflowText = s.workflowPresets[name];
-    refreshPresetDropdowns();
-    saveSettings();
-    toastr.success(`Created workflow preset "${name}"`, 'Presets');
-}
-
-function deleteCurrentWorkflowPreset() {
-    const s = getSettings();
-    const name = s.selectedWorkflowPreset;
-    if (name.startsWith('Default')) {
-        toastr.warning('Cannot delete built-in factory workflow.', 'Presets');
-        return;
-    }
-    if (confirm(`Delete workflow preset "${name}"?`)) {
-        delete s.workflowPresets[name];
+    $('#ia_wf_save').on('click', () => {
+        if (!workflowTextValid()) return;
+        s.workflowPresets[s.selectedWorkflowPreset] = $('#ia_wf_text').val(); saveSettings();
+        notify('success', `Saved preset "${s.selectedWorkflowPreset}"`);
+    });
+    $('#ia_wf_add').on('click', () => {
+        const name = (prompt('Name for the new workflow preset:') || '').trim();
+        if (!name || !workflowTextValid()) return;
+        s.workflowPresets[name] = $('#ia_wf_text').val();
+        s.selectedWorkflowPreset = name; s.activeWorkflowText = s.workflowPresets[name];
+        refreshPresets(); saveSettings();
+    });
+    $('#ia_wf_del').on('click', () => {
+        const n = s.selectedWorkflowPreset;
+        if (n.startsWith('Default')) { notify('warning', 'The built-in preset cannot be deleted.'); return; }
+        if (!confirm(`Delete workflow preset "${n}"?`)) return;
+        delete s.workflowPresets[n];
         s.selectedWorkflowPreset = Object.keys(s.workflowPresets)[0];
         s.activeWorkflowText = s.workflowPresets[s.selectedWorkflowPreset];
-        $('#ia_comfy_workflow').val(s.activeWorkflowText);
-        refreshPresetDropdowns();
-        saveSettings();
-        toastr.info(`Deleted preset "${name}"`, 'Presets');
-    }
-}
-
-function setupAndroidBubble() {
-    const $bubble = $('#ia_gallery_bubble');
-    let isDragging = false, startX, startY, initLeft, initTop, threshold = false;
-
-    $bubble.off('touchstart mousedown').on('touchstart mousedown', function (e) {
-        const evt = e.touches ? e.touches[0] : e;
-        isDragging = true;
-        threshold = false;
-        startX = evt.clientX;
-        startY = evt.clientY;
-        const rect = $bubble[0].getBoundingClientRect();
-        initLeft = rect.left;
-        initTop = rect.top;
-        $bubble.css({ transition: 'none' });
-    });
-
-    $(document).off('touchmove.iabubble mousemove.iabubble').on('touchmove.iabubble mousemove.iabubble', function (e) {
-        if (!isDragging) return;
-        const evt = e.touches ? e.touches[0] : e;
-        const dx = evt.clientX - startX;
-        const dy = evt.clientY - startY;
-        if (Math.abs(dx) > 6 || Math.abs(dy) > 6) threshold = true;
-        if (threshold) {
-            const nx = Math.max(8, Math.min(window.innerWidth - 60, initLeft + dx));
-            const ny = Math.max(8, Math.min(window.innerHeight - 60, initTop + dy));
-            $bubble.css({ left: nx + 'px', top: ny + 'px', right: 'auto', bottom: 'auto' });
-        }
-    });
-
-    $(document).off('touchend.iabubble mouseup.iabubble').on('touchend.iabubble mouseup.iabubble', function () {
-        if (!isDragging) return;
-        isDragging = false;
-        if (threshold) {
-            const rect = $bubble[0].getBoundingClientRect();
-            const targetX = (rect.left + 26 < window.innerWidth / 2) ? 12 : (window.innerWidth - 64);
-            $bubble.css({ transition: 'all 0.25s cubic-bezier(0.25, 1, 0.5, 1)', left: targetX + 'px' });
-            setTimeout(() => $bubble.css({ transition: 'none' }), 250);
-        } else {
-            openGallery();
-        }
+        refreshPresets(); updateBadges(); saveSettings();
     });
 }
 
-function openGallery() {
-    $('#ia_gallery_bubble').fadeOut(150);
-    galleryState.selectionMode = false;
-    galleryState.selectedIds.clear();
-    galleryState.searchQuery = '';
-    $('#ia_gallery_search').val('');
-    $('#ia_gallery_search_clear').hide();
-    $('#ia_win_select_btn').html('<i class="fa-solid fa-check-square"></i> Select');
-    $('#ia_win_delete_btn').hide();
+// ---------------------------------------------------------------------------
+export function setupUI() {
+    if ($('#ia_main_container').length) return;
+    const host = $('#extensions_settings2').length ? $('#extensions_settings2') : $('#extensions_settings');
+    host.append(buildHtml());
 
-    renderGalleryNav();
-    renderGalleryContent('all', null);
-    $('#ia_gallery_modal').fadeIn(200);
-}
+    initDialogs();
+    initGallery();
+    bindFields();
+    bindWorkflow();
+    refreshPresets();
+    refreshProfiles();
+    refreshVisibility();
+    loadSchema();
 
-function toggleSelection(id) {
-    const key = String(id);
-    if (galleryState.selectedIds.has(key)) {
-        galleryState.selectedIds.delete(key);
-        $(`.ia-card[data-id="${key}"]`).removeClass('ia-selected');
-    } else {
-        galleryState.selectedIds.add(key);
-        $(`.ia-card[data-id="${key}"]`).addClass('ia-selected');
-    }
-}
-
-function toggleFavorite(id) {
     const s = getSettings();
-    const item = s.gallery.find(r => String(r.id) === String(id));
-    if (item) {
-        item.favorite = !item.favorite;
-        saveSettings();
-        renderGalleryContent(galleryState.lastFilterChar, galleryState.lastFilterType);
-    }
-}
-
-async function downloadImageLocal(url, filename) {
-    try {
-        toastr.info('Downloading image...', 'Doublesub');
-        const response = await fetch(url);
-        const blob = await response.blob();
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = filename || 'illustration.png';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(a.href);
-    } catch (e) {
-        toastr.error('Failed to download image', 'Doublesub');
-    }
-}
-
-function closeLightbox() {
-    $('#ia_lightbox_modal').fadeOut(150);
-    $('#ia_lightbox_backdrop').fadeOut(150);
-}
-
-function openLightbox(record) {
-    const displayUrl = record.url || record.cleanUrl;
-
-    $('#ia_lightbox_img').attr('src', displayUrl);
-    $('#ia_lightbox_title').text(record.character || 'Illustration');
-    $('#ia_lightbox_desc').text(record.description || record.reason || 'No description provided.');
-
-    const $favBtn = $('#ia_lb_fav_btn');
-    $favBtn.html(record.favorite ? '<i class="fa-solid fa-heart" style="color:#e74c3c;"></i> Favorited' : '<i class="fa-regular fa-heart"></i> Favorite');
-    $favBtn.off('click').on('click', () => {
-        toggleFavorite(record.id);
-        $favBtn.html(record.favorite ? '<i class="fa-solid fa-heart" style="color:#e74c3c;"></i> Favorited' : '<i class="fa-regular fa-heart"></i> Favorite');
+    $('#ia_schema').on('input', function () { s[schemaKey()] = $(this).val(); saveSettings(); updateBadges(); });
+    $('#ia_reset_schema').on('click', () => {
+        if (!confirm('Reset the evaluator instructions for the current mode?')) return;
+        s[schemaKey()] = DEFAULT_PROMPTS[schemaKey()]; saveSettings(); loadSchema();
+    });
+    $('#ia_reset_m2').on('click', () => {
+        s.mode2InjectionText = DEFAULT_MODE2_INJECTION; saveSettings();
+        $('[data-ia="mode2InjectionText"]').val(DEFAULT_MODE2_INJECTION); syncMode2Injection();
     });
 
-    $('#ia_lb_dl_btn').off('click').on('click', () => {
-        const dName = `illustration_${record.character}_${record.date}.png`;
-        downloadImageLocal(displayUrl, dName);
+    $('#ia_open_gallery').on('click', openGallery);
+    $('#ia_eval_now').on('click', () => illustrateMessage());
+    $('#ia_cancel').on('click', cancelAll);
+
+    $('#ia_test_llm').on('click', async () => {
+        const t0 = performance.now();
+        try {
+            const r = await queryAgentLLM('Reply with the single word READY.');
+            toastr.success(`Evaluator online (${Math.round(performance.now() - t0)} ms): ${String(r || '').trim().slice(0, 40)}`, 'Diagnostics');
+        } catch (e) { toastr.error(`Evaluator failed: ${e.message}`, 'Diagnostics'); }
+    });
+    $('#ia_test_comfy').on('click', async () => {
+        const t0 = performance.now();
+        try {
+            const where = await pingComfy();
+            toastr.success(`ComfyUI reachable at ${where} (${Math.round(performance.now() - t0)} ms)`, 'Diagnostics');
+        } catch (e) { toastr.error(e.message, 'Diagnostics'); }
+    });
+    $('#ia_repair').on('click', async function () {
+        const $b = $(this).prop('disabled', true);
+        try {
+            const r = await migrateLegacyImages((n, t) => $b.html(`<i class="fa-solid fa-spinner fa-spin"></i> ${n}/${t}`));
+            if (!r.total) toastr.info('No old-style images found. Nothing to repair.', 'Repair');
+            else toastr[r.fail ? 'warning' : 'success'](`Repaired ${r.ok} of ${r.total} image(s).${r.fail ? ` ${r.fail} could not be fetched from ComfyUI (run this on the ComfyUI PC).` : ''}`, 'Repair');
+        } finally { $b.prop('disabled', false).html('<i class="fa-solid fa-screwdriver-wrench"></i> Repair old images'); }
     });
 
-    $('#ia_lb_show_btn').off('click').on('click', async () => {
-        closeLightbox();
-        $('#ia_gallery_modal').fadeOut(150);
-        await showImageToCharacter(record.url, record.description);
-    });
-
-    $('#ia_lightbox_backdrop').fadeIn(150);
-    $('#ia_lightbox_modal').fadeIn(200);
-}
-
-function renderGalleryNav() {
-    const $nav = $('#ia_gallery_nav').empty();
-    const db = getGalleryDb();
-    const chars = [...new Set(db.map(x => x.character))];
-
-    $nav.append(`<div class="ia-section-title" style="padding: 4px 6px;">Filters</div>`);
-    $nav.append(`
-        <div class="ia-nav-filter" data-filter="all" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;">
-            <i class="fa-solid fa-layer-group"></i> All Media
-        </div>
-        <div class="ia-nav-filter" data-filter="favorites" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;">
-            <i class="fa-solid fa-heart" style="color:#e74c3c;"></i> Favorites
-        </div>
-    `);
-
-    $nav.append(`<div class="ia-section-title" style="padding: 4px 6px; margin-top: 10px;">Characters</div>`);
-    chars.forEach(c => {
-        $nav.append(`<div class="ia-nav-char" data-char="${escapeHtml(c)}" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;"><i class="fa-solid fa-user"></i> ${escapeHtml(c)}</div>`);
-    });
-
-    $('.ia-nav-filter, .ia-nav-char').off('click').on('click', function () {
-        $('.ia-nav-filter, .ia-nav-char').css('background', 'transparent');
-        $(this).css('background', 'rgba(255, 255, 255, 0.15)');
-
-        let type = $(this).data('filter');
-        let char = $(this).data('char');
-        renderGalleryContent(char, type);
-    });
-}
-
-function renderGalleryContent(filterChar = null, filterType = null) {
-    galleryState.lastFilterChar = filterChar;
-    galleryState.lastFilterType = filterType;
-
-    const $grid = $('#ia_gallery_content').empty();
-    let records = [...getGalleryDb()];
-
-    if (filterChar && filterChar !== 'all') records = records.filter(r => r.character === filterChar);
-    if (filterType && filterType !== 'all') {
-        if (filterType === 'favorites') records = records.filter(r => r.favorite);
-    }
-
-    // Text search across character name + description (case-insensitive).
-    const q = (galleryState.searchQuery || '').trim().toLowerCase();
-    if (q) {
-        records = records.filter(r =>
-            (r.character || '').toLowerCase().includes(q) ||
-            (r.description || '').toLowerCase().includes(q) ||
-            (r.reason || '').toLowerCase().includes(q)
-        );
-    }
-
-    if (records.length === 0) {
-        const emptyMsg = q
-            ? `No media matching "${escapeHtml(q)}".`
-            : 'No media found.';
-        $grid.append(`<div style="opacity: 0.6; padding: 20px; grid-column: 1 / -1; text-align: center;">${emptyMsg}</div>`);
-        return;
-    }
-
-    if (q) {
-        $grid.append(`<div class="ia-search-count">${records.length} result${records.length === 1 ? '' : 's'} for "${escapeHtml(q)}"</div>`);
-    }
-
-    let htmlStr = '';
-    records.forEach(r => {
-        const displayUrl = r.url || r.cleanUrl;
-        const imageMarkup = displayUrl ? `<img src="${displayUrl}" loading="lazy" class="ia-clickable-img" />` : `<div style="background: #111; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;"><i class="fa-solid fa-image"></i></div>`;
-        const heartClass = r.favorite ? "fa-solid fa-heart" : "fa-regular fa-heart";
-        const selClass = galleryState.selectedIds.has(String(r.id)) ? "ia-selected" : "";
-        const descRaw = r.description || r.reason || 'No description';
-
-        htmlStr += `
-            <div class="ia-card ${selClass}" data-id="${escapeHtml(r.id)}">
-                <div class="ia-card-sel-overlay"><i class="fa-solid fa-circle-check" style="color: #2ecc71; font-size: 3em; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);"></i></div>
-                <div class="ia-card-img-wrap">
-                    ${imageMarkup}
-                    <div class="ia-card-fav-btn" title="Toggle Favorite"><i class="${heartClass}"></i></div>
-                </div>
-                <div class="ia-card-meta">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <b style="font-size: 0.88em;">${escapeHtml(r.character)}</b>
-                    </div>
-                    <div class="ia-desc-text" title="${escapeHtml(descRaw)}">${escapeHtml(descRaw)}</div>
-                    <div class="ia-card-actions">
-                        <button type="button" class="ia-card-btn ia-insert-roleplay-btn"><i class="fa-solid fa-comment-medical"></i> Insert</button>
-                        <button type="button" class="ia-card-btn ia-expand-btn"><i class="fa-solid fa-expand"></i> View</button>
-                    </div>
-                </div>
-            </div>
-        `;
-    });
-
-    $grid.append(htmlStr);
-
-    $grid.off('click', '.ia-clickable-img, .ia-expand-btn').on('click', '.ia-clickable-img, .ia-expand-btn', function(e) {
-        e.preventDefault(); e.stopPropagation();
-
-        // Double-tap guard (mobile): ignore rapid repeated taps so a single
-        // accidental double press never opens/queues two lightboxes.
-        const now = Date.now();
-        if (now - lastGalleryTapAt < DOUBLE_TAP_GUARD_MS) return;
-        lastGalleryTapAt = now;
-
-        const id = $(this).closest('.ia-card').attr('data-id');
-
-        if (galleryState.selectionMode) {
-            toggleSelection(id);
-            return;
-        }
-
-        const record = getGalleryDb().find(r => String(r.id) === String(id));
-        if (record) openLightbox(record);
-    });
-
-    $grid.off('click', '.ia-card-fav-btn').on('click', '.ia-card-fav-btn', function(e) {
-        e.preventDefault(); e.stopPropagation();
-        if (galleryState.selectionMode) return;
-        const id = $(this).closest('.ia-card').attr('data-id');
-        toggleFavorite(id);
-    });
-
-    $grid.off('click', '.ia-insert-roleplay-btn').on('click', '.ia-insert-roleplay-btn', async function(e) {
-        e.preventDefault(); e.stopPropagation();
-        if (galleryState.selectionMode) return;
-        const id = $(this).closest('.ia-card').attr('data-id');
-        const r = getGalleryDb().find(x => String(x.id) === String(id));
-        if (r) {
-            await deliverRoleplayImage(r.url, r.description);
-            $('#ia_gallery_modal').fadeOut(150);
-            $('#ia_gallery_bubble').fadeIn(200);
-        }
+    on('status', (state, detail) => {
+        const label = { idle: 'Idle', evaluating: 'Evaluating…', generating: 'Generating…' }[state] || state;
+        $('#ia_status').text(detail ? `${label} (${detail})` : label).attr('data-state', state);
     });
 }

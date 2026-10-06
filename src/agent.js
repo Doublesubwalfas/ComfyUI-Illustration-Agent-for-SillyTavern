@@ -1,343 +1,439 @@
-import { getSettings } from './config.js';
-import { generateComfyImage } from './comfy.js';
-import { deliverRoleplayImage, cleanTriggerTags, stripThinkingTags, extractVisualTags } from './chat.js';
-import { promptReviewModal, showBatchCandidatePicker, resetGeneratingIndicator } from './ui.js';
+import { getCtx, truncate, joinTags, withTimeout, clamp, slashSafe, normalizeUrl } from './util.js';
+import { getSettings, notify, getRecordByUrl } from './config.js';
+import { generateImage, recordExternalImage } from './comfy.js';
+import {
+    cleanTriggerTags, stripThinkingTags, stripImageMarkdown, readTags, stripTagsInMessage,
+    contentSig, snapshotTarget, deliverRoleplayImage, replaceImageUrl, lastAssistantIndex
+} from './chat.js';
+import { passesGate } from './prefilter.js';
+import { reviewPrompt, pickCandidate } from './dialogs.js';
+import { emit } from './bus.js';
 
-let isEvaluating = false;
-let messageTurnCounter = 0;
-let currentAbortController = null;
-let lastEvaluatedSignature = null;
-const taskQueue = [];
-let isQueueRunning = false;
-
-export function resetAgentState() {
-    messageTurnCounter = 0;
-    isEvaluating = false;
-    lastEvaluatedSignature = null;
-    if (currentAbortController) {
-        try { currentAbortController.abort(); } catch (_) {}
-        currentAbortController = null;
-    }
-}
-
-export function enqueueTask(taskFn) {
-    taskQueue.push(taskFn);
-    processQueue();
-}
-
-async function processQueue() {
-    if (isQueueRunning) return;
-    isQueueRunning = true;
-    while (taskQueue.length > 0) {
-        const task = taskQueue.shift();
-        try { await task(); }
-        catch (e) { console.error('[Illustration Agent Task Error]', e); }
-    }
-    isQueueRunning = false;
-}
+// ===========================================================================
+//  The agent loop:   SENSE (free, local)  ->  DECIDE (one cheap LLM call)  ->  ACT (queued)
+//  Every stage can bail out early, so most turns cost nothing.
+// ===========================================================================
 
 const AGENT_SYSTEM_PROMPT =
     'You are a JSON-only visual director for image generation. ' +
     'Ignore any other system instructions, character cards, or world info. ' +
     'Respond ONLY with the requested JSON object.';
 
-// ---------------------------------------------------------------------------
-// Fast gate: a cheap local heuristic that runs BEFORE any LLM call in Mode 1.
-// If the recent turns contain no visual/photography/action cues at all, the
-// evaluation is skipped instantly — the agent never "thinks" about pure
-// dialogue. This removes the majority of decision latency.
-// ---------------------------------------------------------------------------
-const VISUAL_CUE_PATTERN = new RegExp([
-    'photograph', 'photo\\b', 'photos\\b', 'picture', 'selfie', 'camera',
-    'snapshot', 'screenshot', 'polaroid', 'portrait', 'sketch', 'drawing',
-    'painting', 'snaps?\\b', 'snapped', 'snapping',
-    'poses?\\b', 'posed\\b', 'posing', 'strikes? a pose',
-    'smiles?\\b', 'smiled', 'winks?\\b', 'winked', 'grins?\\b', 'grinned',
-    'undress', 'strips?\\b', 'stripped', 'stripping', 'unbutton', 'unzip',
-    'naked', 'nude', 'lingerie', 'bikini',
-    'outfit', 'dress\\b', 'dresses\\b', 'dressed', 'skirt', 'blouse', 'gown',
-    'uniform', 'costume', 'stockings', 'heels',
-    'takes? off', 'took off', 'puts? on', 'slips? into', 'changes? into',
-    'wears?\\b', 'wearing',
-    'turns? around', 'spins? around', 'bends? over', 'bent over',
-    'kneels?\\b', 'kneeling', 'crouch', 'leans? (in|forward|back|against)',
-    'holds? up', 'shows? (you|me|her|him|off)', 'displays?', 'reveals?',
-    'flashes?', 'waves?\\b', 'points? (at|to)',
-    'mirror', 'reflection',
-    'sunset', 'sunrise', 'moonlight', 'fireworks', 'rain\\b', 'raining',
-    'snow\\b', 'snowing', 'storm', 'beach', 'forest', 'rooftop', 'balcony',
-    'shower', 'bathtub', 'bath\\b', 'pool\\b', 'bedroom'
-].join('|'), 'i');
+const MAX_MSG_CHARS = 700;
+const MAX_CHAR_DESC = 1000;
+const MAX_QUEUE = 3;
+const MODE2_KEY = 'illustration_agent_mode2';
 
-function hasVisualCue(text) {
-    VISUAL_CUE_PATTERN.lastIndex = 0;
-    return VISUAL_CUE_PATTERN.test(text);
+let runToken = 0;          // bumps on every evaluation; stale results are discarded
+let evalAbort = null;      // abort handle of the in-flight LLM decision
+const queue = [];          // generation jobs (GPU work is serialized)
+let queueRunning = false;
+let currentJobAbort = null;
+
+// ---------------------------------------------------------------------------
+// Status
+// ---------------------------------------------------------------------------
+function refreshStatus(detail = '') {
+    const state = evalAbort ? 'evaluating' : (queueRunning || queue.length ? 'generating' : 'idle');
+    emit('status', state, detail || (queue.length ? `${queue.length} queued` : ''));
 }
 
-// Cheap content signature so we never re-evaluate an unchanged final message
-// (e.g. when MESSAGE_RECEIVED fires twice, or after a pure re-render).
-function buildSignature(lastMsg, mode) {
-    const text = (lastMsg && lastMsg.mes) || '';
-    let hash = 0;
-    for (let i = 0; i < text.length; i++) {
-        hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+export function resetAgentState() {
+    runToken++;
+    try { evalAbort?.abort(); } catch (_) {}
+    evalAbort = null;
+    refreshStatus();
+}
+
+export function cancelAll() {
+    queue.length = 0;
+    try { currentJobAbort?.abort(); } catch (_) {}
+    resetAgentState();
+    notify('info', 'Cancelled running and queued illustrations.');
+}
+
+function enqueue(job) {
+    if (queue.length >= MAX_QUEUE) {
+        queue.shift();
+        notify('warning', 'Illustration queue is full: dropped the oldest job.');
     }
-    return `${mode}:${text.length}:${hash}`;
+    queue.push(job);
+    refreshStatus();
+    runQueue();
 }
 
-const MAX_MSG_CHARS = 700;   // per-message cap inside evaluator context
-const MAX_CHAR_DESC = 800;   // character reference cap
-
-function truncateText(text, max) {
-    if (!text) return '';
-    return text.length > max ? text.slice(0, max) + '…' : text;
+async function runQueue() {
+    if (queueRunning) return;
+    queueRunning = true;
+    while (queue.length) {
+        const job = queue.shift();
+        currentJobAbort = new AbortController();
+        refreshStatus();
+        try { await job(currentJobAbort.signal); }
+        catch (e) {
+            if (e?.name === 'AbortError' || /Cancelled/.test(e?.message || '')) console.log('[Illustration Agent] job cancelled');
+            else { console.error('[Illustration Agent] job failed', e); notify('error', e.message || String(e)); }
+        }
+        currentJobAbort = null;
+    }
+    queueRunning = false;
+    refreshStatus();
 }
 
-export async function queryAgentLLM(fullPrompt) {
+// ---------------------------------------------------------------------------
+// Mode 2: really inject the <image> instruction into the chat prompt
+// ---------------------------------------------------------------------------
+export function syncMode2Injection() {
+    try {
+        const s = getSettings();
+        const ctx = getCtx();
+        if (typeof ctx.setExtensionPrompt !== 'function') return;
+        const on = s.enabled && s.agentMode === 'mode2' && s.mode2Inject && (s.mode2InjectionText || '').trim();
+        const IN_CHAT = ctx.extension_prompt_types?.IN_CHAT ?? 1;
+        ctx.setExtensionPrompt(MODE2_KEY, on ? s.mode2InjectionText.trim() : '', IN_CHAT, 1, false, 0);
+    } catch (e) { console.warn('[Illustration Agent] could not sync Mode 2 instruction', e); }
+}
+
+// ---------------------------------------------------------------------------
+// LLM access
+// ---------------------------------------------------------------------------
+export async function queryAgentLLM(prompt, signal = null) {
     const s = getSettings();
+    const ctx = getCtx();
+    const ms = (s.llmTimeoutSec || 45) * 1000;
 
     if (s.llmProvider === 'custom') {
         const url = `${(s.customLlmUrl || '').replace(/\/+$/, '')}/chat/completions`;
-        const resp = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${s.customLlmKey || ''}`
-            },
-            body: JSON.stringify({
-                model: s.customLlmModel,
-                messages: [
-                    { role: 'system', content: AGENT_SYSTEM_PROMPT },
-                    { role: 'user', content: fullPrompt }
-                ],
-                // temperature 0 → deterministic, faster decisions; small
-                // max_tokens → the model stops as soon as the JSON is done.
-                temperature: 0,
-                max_tokens: 450
-            })
-        });
-        if (!resp.ok) {
-            const errText = await resp.text();
-            throw new Error(`Custom LLM HTTP ${resp.status}: ${errText.slice(0, 200)}`);
-        }
-        const data = await resp.json();
-        const content = data?.choices?.[0]?.message?.content;
-        if (!content) throw new Error('Custom LLM returned an empty response.');
+        const ctl = new AbortController();
+        signal?.addEventListener('abort', () => ctl.abort(), { once: true });
+        const timer = setTimeout(() => ctl.abort(), ms);
+        try {
+            const resp = await fetch(url, {
+                method: 'POST', signal: ctl.signal,
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${s.customLlmKey || ''}` },
+                body: JSON.stringify({
+                    model: s.customLlmModel,
+                    messages: [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
+                    temperature: 0, max_tokens: 450
+                })
+            });
+            if (!resp.ok) throw new Error(`Custom LLM HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+            const content = (await resp.json())?.choices?.[0]?.message?.content;
+            if (!content) throw new Error('Custom LLM returned an empty response.');
+            return content;
+        } finally { clearTimeout(timer); }
+    }
+
+    if (s.llmProvider === 'profile') {
+        const svc = ctx.ConnectionManagerRequestService;
+        if (!svc?.sendRequest) throw new Error('Connection Manager is not available in this SillyTavern version.');
+        if (!s.connectionProfile) throw new Error('Pick a Connection Profile in the Evaluator section.');
+        const res = await withTimeout(svc.sendRequest(
+            s.connectionProfile,
+            [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
+            450, { stream: false, signal, extractData: true, includePreset: true, includeInstruct: false }
+        ), ms, 'Connection profile request');
+        const content = typeof res === 'string' ? res : res?.content;
+        if (!content) throw new Error('The connection profile returned an empty response.');
         return content;
     }
 
-    const ctx = SillyTavern.getContext();
     if (typeof ctx.generateRaw === 'function') {
-        return await ctx.generateRaw({
-            systemPrompt: AGENT_SYSTEM_PROMPT,
-            prompt: fullPrompt,
-            responseLength: 350,
-            trimNames: false
-        });
+        return await withTimeout(ctx.generateRaw({
+            systemPrompt: AGENT_SYSTEM_PROMPT, prompt, responseLength: 350, trimNames: false
+        }), ms, 'Evaluator');
     }
-    // Legacy fallback: skipWIAN=true skips World Info / Author's Note for better isolation.
-    return await ctx.generateQuietPrompt(fullPrompt, false, true);
+    return await withTimeout(ctx.generateQuietPrompt(prompt, false, true), ms, 'Evaluator');
 }
 
-export async function runEvaluation(force = false, tags = null) {
-    if (isEvaluating) return;
-    const context = SillyTavern.getContext();
+// ---------------------------------------------------------------------------
+// Parsing the agent's JSON
+// ---------------------------------------------------------------------------
+function extractJsonObject(text) {
+    const start = text.indexOf('{');
+    if (start < 0) return null;
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < text.length; i++) {
+        const c = text[i];
+        if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+        if (c === '"') inStr = true;
+        else if (c === '{') depth++;
+        else if (c === '}' && --depth === 0) return text.slice(start, i + 1);
+    }
+    return null;
+}
+
+export function parseAgentResult(raw) {
+    const text = stripThinkingTags(String(raw || '')).replace(/```(?:json)?/gi, '');
+    const json = extractJsonObject(text);
+    if (!json) throw new Error('The evaluator did not return a JSON object.');
+    let obj;
+    try { obj = JSON.parse(json); }
+    catch { obj = JSON.parse(json.replace(/,\s*([}\]])/g, '$1')); }
+    const d = obj.decision;
+    const yes = d === true || /^y/i.test(String(d ?? ''));
+    return {
+        decision: yes ? 'yes' : 'no',
+        description: String(obj.description || '').trim(),
+        prompt: String(obj.prompt || '').trim(),
+        negativePrompt: String(obj.negativePrompt || obj.negative_prompt || '').trim(),
+        aspectRatio: ['portrait', 'landscape', 'square'].includes(obj.aspectRatio) ? obj.aspectRatio : 'portrait'
+    };
+}
+
+function resultFromTags(tags) {
+    return {
+        decision: 'yes',
+        description: (tags.scene || tags.image || '').slice(0, 200),
+        prompt: [tags.image, tags.scene].filter(Boolean).join(', '),
+        negativePrompt: '',
+        aspectRatio: tags.scene && !tags.image ? 'landscape' : 'portrait'
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Sensing helpers (all local, all free)
+// ---------------------------------------------------------------------------
+const isAssistant = (m) => m && !m.is_user && !m.is_system;
+
+export function intervalDue(chat, idx, interval) {
+    const n = chat.slice(0, idx + 1).filter(isAssistant).length;
+    return n % Math.max(1, interval || 3) === 0;
+}
+
+// Assistant turns since the last illustrated message (Infinity if none).
+export function turnsSinceIllustration(chat, idx) {
+    let d = 1;
+    for (let i = idx - 1; i >= 0; i--) {
+        if (!isAssistant(chat[i])) continue;
+        if (chat[i].extra?.ia_done) return d;
+        d++;
+    }
+    return Infinity;
+}
+
+function findCharacter(ctx, msg) {
+    const chars = ctx.characters || [];
+    if (msg.original_avatar) { const c = chars.find(x => x.avatar === msg.original_avatar); if (c) return c; }
+    if (msg.name) { const c = chars.find(x => x.name === msg.name); if (c) return c; }
+    return ctx.characterId != null ? chars[ctx.characterId] : null;
+}
+
+function compact(m, s) {
+    let t = cleanTriggerTags(m.mes || '');
+    if (!s.includeThinking) t = stripThinkingTags(t);
+    t = stripImageMarkdown(t);
+    return `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${truncate(t, MAX_MSG_CHARS)}`;
+}
+
+function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
     const s = getSettings();
+    const look = Math.max(1, parseInt(s.lookback) || 3);
+    const recent = chat.slice(Math.max(0, idx - look + 1), idx + 1);
+    const ch = findCharacter(ctx, msg);
+    const desc = ch?.data?.description || ch?.description || '';
 
-    if (!context.chat || context.chat.length === 0) return;
-    if (!s.enabled && !force) return;
-
-    const lookbackCount = Math.max(1, parseInt(s.lookback) || 3);
-    const recentMessages = context.chat.slice(-lookbackCount);
-    const lastMsg = recentMessages[recentMessages.length - 1];
-
-    // Recover trigger tags from the raw message if the caller did not pass
-    // them (e.g. manual reroll). Harmless if the text was already cleaned.
-    if (!tags || (!tags.extractedImageText && !tags.extractedSceneText)) {
-        const raw = extractVisualTags(lastMsg?.mes || '');
-        tags = {
-            extractedImageText: tags?.extractedImageText || raw.image,
-            extractedSceneText: tags?.extractedSceneText || raw.scene
-        };
+    let tagBlock = '';
+    if (tags?.has && (mode === 'mode2' || mode === 'forced-tags')) {
+        tagBlock = '\n[VISUAL DESCRIPTION EXTRACTED FROM THE ASSISTANT\'S RESPONSE:]\n';
+        if (tags.image) tagBlock += `-> ${tags.image}\n`;
+        if (tags.scene) tagBlock += `-> ${tags.scene}\n`;
+        tagBlock += 'CONVERT THIS EXACT DESCRIPTION INTO IMAGE TAGS AND INCLUDE CHARACTER TRAITS.\n';
     }
 
-    // --- MODE 2 GATE -------------------------------------------------------
-    // The agent runs ONLY when the assistant actually emitted an
-    // <image>/<scene> tag. No tag → total silence, zero LLM calls.
-    if (!force && s.agentMode === 'mode2') {
-        if (!tags.extractedImageText && !tags.extractedSceneText) {
-            console.log('[Illustration Agent] Mode 2: no <image>/<scene> tag — agent stays idle.');
-            return;
-        }
-    }
+    let last = cleanTriggerTags(msg.mes || '');
+    if (!s.includeThinking) last = stripThinkingTags(last);
+    last = stripImageMarkdown(last);
 
-    // --- MODE 3 GATE -------------------------------------------------------
-    if (!force && s.agentMode === 'mode3') {
-        messageTurnCounter++;
-        if (messageTurnCounter % (s.triggerInterval || 3) !== 0) {
-            console.log(`[Illustration Agent] Mode 3: Skip (${messageTurnCounter}/${s.triggerInterval})`);
-            return;
-        }
-    }
-
-    // --- DUPLICATE GUARD ---------------------------------------------------
-    const signature = buildSignature(lastMsg, s.agentMode);
-    if (!force && signature === lastEvaluatedSignature) {
-        console.log('[Illustration Agent] Unchanged final message — skipping evaluation.');
-        return;
-    }
-
-    // --- BUILD COMPACT CONTEXT --------------------------------------------
-    const contextText = recentMessages
-        .map(m => {
-            let msgText = cleanTriggerTags(m.mes);
-            if (!s.includeThinking) msgText = stripThinkingTags(msgText);
-            return `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${truncateText(msgText, MAX_MSG_CHARS)}`;
-        })
-        .join('\n\n');
-
-    // --- MODE 1 FAST GATE ---------------------------------------------------
-    // Local regex check, zero network cost. Skips the whole LLM decision
-    // step when the recent turns are pure dialogue with no visual cues.
-    if (!force && s.agentMode === 'mode1' && s.fastGate !== false && !hasVisualCue(contextText)) {
-        lastEvaluatedSignature = signature;
-        console.log('[Illustration Agent] Fast gate: no visual cues detected — LLM evaluation skipped.');
-        return;
-    }
-
-    lastEvaluatedSignature = signature;
-    isEvaluating = true;
-    currentAbortController = new AbortController();
-    const signal = currentAbortController.signal;
-
-    try {
-        const activeChar = context.characters?.[context.characterId];
-        const charDescription = activeChar?.data?.description || activeChar?.description || '';
-
-        let activeSchema = s.promptMode1;
-        if (s.agentMode === 'mode2') activeSchema = s.promptMode2;
-        if (s.agentMode === 'mode3') activeSchema = s.promptMode3;
-
-        let mode2Context = '';
-        if (s.agentMode === 'mode2' && tags) {
-            mode2Context += '\n[THE FOLLOWING VISUAL DESCRIPTION WAS EXTRACTED FROM THE ASSISTANT\'S RESPONSE:]\n';
-            if (tags.extractedImageText) mode2Context += `-> ${tags.extractedImageText}\n`;
-            if (tags.extractedSceneText) mode2Context += `-> ${tags.extractedSceneText}\n`;
-            mode2Context += 'CONVERT THIS EXACT DESCRIPTION INTO IMAGE TAGS AND INCLUDE CHARACTER TRAITS.\n';
-        }
-
-        let finalAssistantText = cleanTriggerTags(lastMsg.mes);
-        if (!s.includeThinking) finalAssistantText = stripThinkingTags(finalAssistantText);
-
-        const fullPrompt = `${activeSchema}
+    return `${schema}
 
 Character Reference:
-Name: ${activeChar?.name || 'Character'}
-Description: ${truncateText(charDescription, MAX_CHAR_DESC)}
+Name: ${ch?.name || msg.name || 'Character'}
+Description: ${truncate(desc, MAX_CHAR_DESC)}
 
 Recent Isolated Context:
-${contextText}
-${mode2Context}
+${recent.map(m => compact(m, s)).join('\n\n')}
+${tagBlock}
 <assistant_response>
-${truncateText(finalAssistantText, MAX_MSG_CHARS)}
+${truncate(last, MAX_MSG_CHARS)}
 </assistant_response>`;
+}
 
-        $('#ia_gallery_bubble').addClass('is-generating');
-        $('#ia_bubble_icon').removeClass('fa-camera-retro').addClass('fa-wand-magic-sparkles fa-spin');
-        toastr.info('Illustration Agent evaluating scene...', 'Doublesub');
+function sizeFor(aspect, s) {
+    if (aspect === 'landscape') return [s.resLandscapeW || 1216, s.resLandscapeH || 832];
+    if (aspect === 'square') return [s.resSquareW || 1024, s.resSquareH || 1024];
+    return [s.resPortraitW || 832, s.resPortraitH || 1216];
+}
 
-        const rawResponse = await queryAgentLLM(fullPrompt);
-        if (!rawResponse) return;
+// ---------------------------------------------------------------------------
+// ENTRY POINTS
+// ---------------------------------------------------------------------------
 
-        let result;
-        try {
-            const cleaned = rawResponse.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
-            const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) throw new Error('No JSON object returned by LLM');
-            result = JSON.parse(jsonMatch[0]);
-        } catch (parseErr) {
-            // Mode 2 resilience: the trigger tag itself is authoritative.
-            // If the LLM mangles the JSON, generate straight from the tag
-            // text instead of dropping the illustration entirely.
-            if (s.agentMode === 'mode2' && (tags.extractedImageText || tags.extractedSceneText)) {
-                console.warn('[Illustration Agent] Mode 2: LLM output unparseable — using tag text directly.', parseErr);
-                const tagText = [tags.extractedImageText, tags.extractedSceneText].filter(Boolean).join(', ');
-                result = {
-                    decision: 'yes',
-                    description: tags.extractedSceneText || tags.extractedImageText,
-                    prompt: tagText,
-                    negativePrompt: '',
-                    aspectRatio: 'portrait'
-                };
-            } else {
-                throw parseErr;
+// Called by index.js for every finished assistant message.
+export async function handleNewMessage(idx) {
+    const s = getSettings();
+    if (!s.enabled) return;
+    const chat = getCtx().chat;
+    const msg = chat?.[idx];
+    if (!isAssistant(msg)) return;
+
+    const tags = readTags(msg);              // read from RAW text first...
+    if (tags.has) stripTagsInMessage(idx);   // ...then remove tags from the visible message
+    await evaluate({ idx, tags, force: false });
+}
+
+// Manual trigger: wand button on a message, or the settings button.
+export async function illustrateMessage(idx = null) {
+    const chat = getCtx().chat || [];
+    idx = idx ?? lastAssistantIndex();
+    if (idx == null || !isAssistant(chat[idx])) { notify('warning', 'No assistant message to illustrate.'); return; }
+    await evaluate({ idx, tags: readTags(chat[idx]), force: true });
+}
+
+// ---------------------------------------------------------------------------
+// SENSE -> DECIDE
+// ---------------------------------------------------------------------------
+async function evaluate({ idx, tags, force }) {
+    const s = getSettings();
+    const ctx = getCtx();
+    const chat = ctx.chat;
+    const msg = chat[idx];
+    if (!msg) return;
+    const mode = s.agentMode;
+    const sig = contentSig(msg);
+
+    if (!force) {
+        if (msg.extra?.ia_sig === sig) return;                                           // already handled this exact text
+        if (mode === 'mode2' && !tags.has) return;                                       // no tag, total silence
+        if (mode === 'mode3' && !intervalDue(chat, idx, s.triggerInterval)) return;
+        if (mode === 'mode1') {
+            if (turnsSinceIllustration(chat, idx) < (s.cooldown || 0)) return;           // cooldown
+            if (s.fastGate !== false) {
+                const prev = chat[idx - 1];
+                const gate = passesGate({
+                    assistantText: cleanTriggerTags(msg.mes || ''),
+                    userText: prev?.is_user ? prev.mes : '',
+                    sensitivity: s.gateSensitivity, extra: s.extraCues
+                });
+                if (!gate.pass) { console.log(`[Illustration Agent] gate: score ${gate.score} < ${s.gateSensitivity}, skipped`); return; }
             }
         }
+        msg.extra = msg.extra || {};
+        msg.extra.ia_sig = sig;
+    }
 
-        console.log('[Illustration Agent Output]', result);
+    // A manual run on a plain message must use an "always yes" prompt.
+    const promptMode = force && !tags.has && mode !== 'mode3' ? 'mode3' : mode;
+    const schema = { mode1: s.promptMode1, mode2: s.promptMode2, mode3: s.promptMode3 }[promptMode] || s.promptMode3;
+    const tagsMode = force && tags.has ? 'forced-tags' : mode;
 
-        // Only Mode 1 ever vetoes. Modes 2 and 3 always proceed — the
-        // trigger condition (tag / interval) already IS the decision.
-        if (s.agentMode === 'mode1' && result.decision !== 'yes' && !force) {
-            toastr.info('Decision: Static scene, no illustration needed.', 'Doublesub');
-            return;
-        }
+    const myToken = ++runToken;
+    const target = snapshotTarget(idx);
+    evalAbort?.abort();
+    const ac = (evalAbort = new AbortController());
+    refreshStatus();
 
-        toastr.success('Decision: Illustrating scene', 'Doublesub');
-        const combinedPos = [s.stylePrefix, result.prompt].filter(Boolean).join(', ');
-        const combinedNeg = [s.defaultNegative, result.negativePrompt].filter(Boolean).join(', ');
-
-        if (s.interactiveReview) {
-            promptReviewModal(combinedPos, combinedNeg, result.aspectRatio, result, executeImagePipeline);
+    let result;
+    try {
+        const useTagsOnly = (mode === 'mode2' || (force && tags.has)) && tags.has && s.mode2SkipLLM;
+        if (useTagsOnly) {
+            result = resultFromTags(tags);
         } else {
-            enqueueTask(async () => {
-                await executeImagePipeline(combinedPos, combinedNeg, result.aspectRatio, result);
-            });
+            const raw = await queryAgentLLM(buildPrompt({ schema, ctx, chat, idx, msg, tags, mode: tagsMode }), ac.signal);
+            if (myToken !== runToken || getCtx().chatId !== target.chatId) return;       // superseded
+            try { result = parseAgentResult(raw); }
+            catch (parseErr) {
+                if (!tags.has) throw parseErr;                                           // the tag itself is authoritative
+                console.warn('[Illustration Agent] unparseable LLM output, using tag text directly', parseErr);
+                result = resultFromTags(tags);
+            }
         }
     } catch (e) {
-        if (e.name === 'AbortError' || /Cancelled/.test(e.message)) {
-            console.log('[Illustration Agent] Evaluation aborted.');
-            return;
-        }
-        // Allow a later retry after genuine failures.
-        lastEvaluatedSignature = null;
-        console.error('[Illustration Agent Error]', e);
-        toastr.error('Evaluation failed: ' + e.message, 'Doublesub');
+        if (e?.name === 'AbortError') return;
+        if (msg.extra) delete msg.extra.ia_sig;                                          // allow a later retry
+        console.error('[Illustration Agent] evaluation failed', e);
+        notify('error', 'Evaluation failed: ' + e.message);
+        return;
     } finally {
-        resetGeneratingIndicator();
-        isEvaluating = false;
-        currentAbortController = null;
+        if (evalAbort === ac) evalAbort = null;
+        refreshStatus();
     }
+
+    if (myToken !== runToken) return;
+    if (mode === 'mode1' && !force && result.decision !== 'yes') { notify('info', 'No illustration needed for this turn.'); return; }
+    if (!result.prompt) { notify('warning', 'The agent returned an empty prompt, so nothing was generated.'); return; }
+
+    // -------------------- ACT --------------------
+    let positive = joinTags(s.stylePrefix, result.prompt);
+    let negative = joinTags(s.defaultNegative, result.negativePrompt);
+    let aspect = result.aspectRatio;
+    let description = result.description;
+
+    if (s.interactiveReview) {
+        const edited = await reviewPrompt({ description, positive, negative, aspect });
+        if (!edited) return;
+        ({ positive, negative, aspect, description } = edited);
+    }
+
+    msg.extra = msg.extra || {};
+    msg.extra.ia_done = true;                                                            // drives the cooldown
+    const character = findCharacter(ctx, msg)?.name || msg.name;
+
+    enqueue(async (signal) => {
+        try { await runGeneration({ positive, negative, aspect, description, target, character, signal }); }
+        catch (e) { delete msg.extra?.ia_done; throw e; }
+    });
 }
 
-export async function executeImagePipeline(positive, negative, aspectRatio, metadata, signal = null) {
+async function generateViaSdCommand(positive) {
+    const ctx = getCtx();
+    const run = ctx.executeSlashCommandsWithOptions || ctx.executeSlashCommands;
+    const res = await run.call(ctx, `/sd quiet=true ${slashSafe(positive)}`, { handleParserErrors: true, handleExecutionErrors: true });
+    const out = typeof res === 'string' ? res : res?.pipe;
+    if (!out || !String(out).trim()) throw new Error('/sd returned no image. Is the Image Generation extension configured?');
+    return normalizeUrl(String(out).trim());
+}
+
+async function runGeneration({ positive, negative, aspect, description, target, character, signal }) {
     const s = getSettings();
-    let width = s.resPortraitW || 832;
-    let height = s.resPortraitH || 1216;
+    const [width, height] = sizeFor(aspect, s);
+    const n = clamp(parseInt(s.batchCount) || 1, 1, 4);
+    const results = [];
 
-    if (aspectRatio === 'landscape') { width = s.resLandscapeW || 1216; height = s.resLandscapeH || 832; }
-    else if (aspectRatio === 'square') { width = s.resSquareW || 1024; height = s.resSquareH || 1024; }
-
-    const totalBatch = Math.max(1, s.batchCount || 1);
-    const generatedResults = [];
-    const backend = s.imageBackend || 'comfyui_direct';
-
-    try {
-        for (let i = 0; i < totalBatch; i++) {
-            if (backend === 'comfyui_direct') {
-                const res = await generateComfyImage(positive, negative, width, height, metadata, signal);
-                if (res) generatedResults.push(res);
-            } else {
-                await SillyTavern.getContext().executeSlashCommands(`/imagine ${positive}`);
-            }
+    for (let i = 0; i < n; i++) {
+        if (signal.aborted) throw new Error('Cancelled');
+        emit('status', 'generating', n > 1 ? `image ${i + 1}/${n}` : '');
+        if (s.imageBackend === 'sd_command') {
+            const url = await generateViaSdCommand(positive);
+            recordExternalImage({ url, positive, description, character });
+            results.push({ url, thumb: null });
+        } else {
+            results.push(await generateImage({ positive, negative, width, height, description, character, signal }));
         }
-
-        if (generatedResults.length === 1) {
-            await deliverRoleplayImage(generatedResults[0].cleanUrl, metadata.description);
-        } else if (generatedResults.length > 1) {
-            showBatchCandidatePicker(generatedResults, metadata.description, deliverRoleplayImage);
-        }
-    } finally {
-        resetGeneratingIndicator();
     }
+
+    if (results.length === 1) { await deliverRoleplayImage(results[0].url, description, target); return; }
+    const pick = await pickCandidate(results);
+    if (pick != null) await deliverRoleplayImage(results[pick].url, description, target);
 }
+
+// Reroll = same prompt, new seed, NO LLM call. Swaps the image in the chat message.
+export async function rerollImage(url, { replaceInChat = true } = {}) {
+    const rec = getRecordByUrl(url);
+    if (!rec?.positive) { notify('warning', 'This image has no stored prompt, so it cannot be rerolled.'); return; }
+    const [w, h] = String(rec.aspectRatio || '').split('x').map(Number);
+    const s = getSettings();
+    notify('info', 'Rerolling illustration…');
+    enqueue(async (signal) => {
+        const r = await generateImage({
+            positive: rec.positive, negative: rec.negative,
+            width: w || s.resPortraitW, height: h || s.resPortraitH,
+            description: rec.description, character: rec.character, signal
+        });
+        const idx = replaceInChat ? replaceImageUrl([url, rec.url, rec.legacyUrl], r.url) : null;
+        notify('success', idx == null ? 'New variation saved to the Gallery.' : 'Illustration rerolled.');
+    });
+}
+
+// "Redo" from the gallery viewer: a fresh variation of a stored prompt.
+export async function rerollRecord(rec) { return rerollImage(rec.url, { replaceInChat: false }); }

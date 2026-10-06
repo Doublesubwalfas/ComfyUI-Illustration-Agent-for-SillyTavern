@@ -1,54 +1,42 @@
-# ComfyUI Illustration Agent for SillyTavern
+# ComfyUI Illustration Agent for SillyTavern (v3)
 
-A SillyTavern extension replicating the autonomous **Doublesub Illustration Agent**.
+An autonomous illustration agent: it **senses** each reply for free, **decides** with one cheap LLM call only when
+something visual happened, then **acts** through a serialized ComfyUI queue and attaches the result to the right message.
 
-## Features
-- **Autonomous Scene Detection**: Background LLM assesses dialogue and actions to trigger art only during pivotal or visual scene changes.
-- **Fast Pre-Filter (Mode 1)**: A zero-cost local heuristic scans recent turns for visual cues *before* any LLM call. Pure-dialogue turns are skipped instantly — the agent never "thinks" unless something visual actually happened. Toggleable in settings.
-- **Mode 2 XML Triggering (fixed)**: `<image>` / `<scene>` tags emitted by the character are now extracted from the raw message *before* cleanup, so tag-triggered generation actually fires. If the LLM ever mangles its JSON in Mode 2, the tag text itself is used directly — no dropped illustrations. Modes 2 and 3 never run a decision step; the trigger condition is the decision.
-- **Built-in ComfyUI Support**: Leverages SillyTavern's configured ComfyUI pipeline through `/imagine` or direct API integration. Numeric workflow macros (`%seed%`, `%steps%`, `%width%`, …) are injected as real JSON numbers so ComfyUI type validation passes.
-- **Searchable Gallery**: Filter by character or favorites, plus a live search box that matches character names and image descriptions.
-- **Mobile-Friendly Viewer**: Tapping an image on mobile opens it in a slightly smaller floating window (with a dimmed tap-to-dismiss backdrop) instead of a fullscreen takeover, and a double-tap guard prevents accidental double opens.
-- **Custom Agent Prompts**: Customize scene sensitivity, art styles, and trigger word mechanics natively.
+## Install
+Extensions → Install extension → `https://github.com/Doublesubwalfas/comfyui-illustration-agent`
 
-## Installation
-1. In SillyTavern, open the **Extensions** menu (Three Cubes icon).
-2. Click **Install Extension** and paste:
-   `https://github.com/Doublesubwalfas/comfyui-illustration-agent`
-3. Configure your image generation provider in SillyTavern (ComfyUI recommended).
-4. Enable the agent inside the extension drawer.
+## How the agent runs
+1. **Sense (local, free).** A keyword scorer reads only the narration (quoted speech is ignored) plus your last message.
+   Pure dialogue never reaches the LLM. A cooldown stops back-to-back images.
+2. **Decide (one LLM call).** Mode 1 asks "is this a visual beat?" and returns the prompt in the same call.
+   Mode 2 runs only when the roleplay model writes `<image>`/`<scene>` (the instruction is injected automatically).
+   Mode 3 runs every N assistant messages. Use a *Connection Profile* to give the agent a small, fast model.
+3. **Act (queued).** Jobs run one at a time. The target message is captured when the decision is made, so the image
+   lands on the correct message even if you keep chatting or switch chats while it renders.
 
-## How illustrations reach the roleplay
-Generated images are delivered through `deliverRoleplayImage()`:
-- **Append to Assistant Turn** (default): the image markdown is appended to the latest assistant message (and its active swipe), then persisted to the chat file.
-- **Separate Comment Card**: the image is injected as a `/comment` card hidden from LLM context.
+Reroll reuses the stored prompt with a new seed (no LLM call) and swaps the image in place.
+The wand button on every assistant message illustrates that specific message.
 
-Every generated image is also recorded in the Gallery with its character, description, prompts, and resolution.
+## Why images now work on mobile
+v2 let the *browser* call ComfyUI and then saved a `http://127.0.0.1:8188/...` link, which only exists on the PC.
+v3 sends generation through the SillyTavern server (`/api/sd/comfy/generate`), saves the PNG on the server
+(`/api/images/upload`) and stores a normal `/user/images/...` path, so every device can load it.
+Set **ComfyUI URL** to the address as seen from the *SillyTavern host* (usually `http://127.0.0.1:8188`).
 
-## Architecture
+Images made by v2 can be copied across once with **Settings → Gallery and storage → Repair old images**
+(press it on the PC that runs ComfyUI, while ComfyUI is running).
+
+## Gallery and viewer
+Thumbnails, infinite scroll, search (name, caption, prompt), favorites, long-press to multi-select.
+The viewer is full-screen: pinch / double-tap zoom, swipe left-right to browse, swipe down to close,
+tap to hide controls, big touch targets, and a tap-through guard. The floating bubble is draggable, remembers
+its position and comes back automatically when the gallery closes.
+
+## Layout
 ```
-comfyui-illustration-agent/
-│
-├── manifest.json
-├── index.js
-├── settings.html
-├── style.css
-├── README.md
-│
-└── src/
-    ├── agent.js
-    ├── chat.js
-    ├── comfy.js
-    ├── config.js
-    └── ui.js
+manifest.json  index.js  style.css  README.md
+src/ agent.js  chat.js  comfy.js  config.js  prefilter.js
+     gallery.js  dialogs.js  ui.js  bus.js  util.js
 ```
-
-## Changelog — 2.2.0
-- Fixed Mode 2: trigger tags were extracted *after* `cleanTriggerTags()` stripped them, so Mode 2 never fired. Extraction now runs on the raw message (with swipe fallback).
-- Added Mode 2 JSON-parse fallback: generates directly from tag text if the LLM response is malformed.
-- Added Fast Pre-Filter (Mode 1): skips the LLM decision entirely when no visual cues are present.
-- Added duplicate-message guard: identical final messages are never re-evaluated.
-- Reduced evaluator cost: compact context (per-message caps), `responseLength` 350, custom-API `temperature: 0` / `max_tokens: 450`.
-- Gallery: live search across character names and descriptions, result counter, clear button, HTML escaping.
-- Mobile: lightbox opens as an inset floating window with tap-outside backdrop; double-tap guard on gallery cards.
-- ComfyUI: type-safe macro substitution (numbers stay numbers).
+(`settings.html` was never loaded by SillyTavern and has been removed; the panel is built in `ui.js`.)
