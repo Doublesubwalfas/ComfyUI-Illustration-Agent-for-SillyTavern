@@ -1,0 +1,14 @@
+comfyui-illustration-agent/
+│
+├── manifest.json
+├── index.js
+├── settings.html
+├── style.css
+├── README.md
+│
+└── src/
+    ├── agent.js
+    ├── chat.js
+    ├── comfy.js
+    ├── config.js
+    └── ui.js
