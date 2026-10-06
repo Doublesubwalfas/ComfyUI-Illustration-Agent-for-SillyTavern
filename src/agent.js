@@ -8,6 +8,7 @@ import {
 import { passesGate } from './prefilter.js';
 import { reviewPrompt, pickCandidate } from './dialogs.js';
 import { emit } from './bus.js';
+import { waitForStIdle } from './stb.js';
 
 // ===========================================================================
 //  The agent loop:   SENSE (free, local)  ->  DECIDE (one cheap LLM call)  ->  ACT (queued)
@@ -125,17 +126,26 @@ export async function queryAgentLLM(prompt, signal = null) {
     }
 
     if (s.llmProvider === 'profile') {
-        const svc = ctx.ConnectionManagerRequestService;
-        if (!svc?.sendRequest) throw new Error('Connection Manager is not available in this SillyTavern version.');
         if (!s.connectionProfile) throw new Error('Pick a Connection Profile in the Evaluator section.');
-        const res = await withTimeout(svc.sendRequest(
-            s.connectionProfile,
-            [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
-            450, { stream: false, signal, extractData: true, includePreset: true, includeInstruct: false }
-        ), ms, 'Connection profile request');
-        const content = typeof res === 'string' ? res : res?.content;
-        if (!content) throw new Error('The connection profile returned an empty response.');
-        return content;
+        let svc = ctx.ConnectionManagerRequestService;
+        if (!svc?.sendRequest) {
+            try { svc = (await import(new URL('/scripts/extensions/shared.js', location.origin).href)).ConnectionManagerRequestService; } catch (_) { /* handled below */ }
+        }
+        if (!svc?.sendRequest) throw new Error('Connection Manager is not available in this SillyTavern.');
+        const messages = [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }];
+        try {
+            // Chat Completion profiles take the messages as-is; Text Completion profiles need a formatted string.
+            const built = typeof svc.constructPrompt === 'function' ? svc.constructPrompt(messages, s.connectionProfile) : messages;
+            const res = await withTimeout(svc.sendRequest(
+                s.connectionProfile, built, 450,
+                { stream: false, signal, extractData: true, includePreset: true, includeInstruct: true }
+            ), ms, 'Connection profile request');
+            const content = typeof res === 'string' ? res : res?.content;
+            if (!content) throw new Error('The connection profile returned an empty response.');
+            return content;
+        } catch (e) {
+            throw new Error(e?.cause?.message ? `${e.message}: ${e.cause.message}` : e.message);
+        }
     }
 
     if (typeof ctx.generateRaw === 'function') {
@@ -326,6 +336,10 @@ async function evaluate({ idx, tags, force }) {
     const promptMode = force && !tags.has && mode !== 'mode3' ? 'mode3' : mode;
     const schema = { mode1: s.promptMode1, mode2: s.promptMode2, mode3: s.promptMode3 }[promptMode] || s.promptMode3;
     const tagsMode = force && tags.has ? 'forced-tags' : mode;
+
+    // Don't collide with a roleplay reply that SillyTavern is still finishing.
+    await waitForStIdle();
+    if (getCtx().chat?.[idx] !== msg) return;                                            // chat changed while waiting
 
     const myToken = ++runToken;
     const target = snapshotTarget(idx);

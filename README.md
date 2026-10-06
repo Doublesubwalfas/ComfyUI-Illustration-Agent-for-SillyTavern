@@ -27,7 +27,19 @@ Set **ComfyUI URL** to the address as seen from the *SillyTavern host* (usually 
 Images made by v2 can be copied across once with **Settings → Gallery and storage → Repair old images**
 (press it on the PC that runs ComfyUI, while ComfyUI is running).
 
+## Send button becomes Stop
+While the agent evaluates a scene and/or renders an image, SillyTavern's Send button turns into the **Stop** button,
+the same state as a normal roleplay reply. Pressing it cancels the agent's current and queued work and restores the UI.
+It waits for any roleplay reply that is still finishing before taking over, and never touches the button while
+SillyTavern itself is generating. Configure under **Agent → Send button while the agent works**
+(Stop during decision + rendering / decision only / off).
+
 ## Gallery and viewer
+The whole UI (bubble, gallery, viewer, dialogs) lives in an isolated **Shadow DOM** with its own CSS and inline icons,
+so SillyTavern's theme CSS cannot distort it. Mobile layout is full-screen with a back arrow, collapsible search,
+opaque background and a bottom selection bar. If anything feels small, raise **Gallery size** or set **Gallery columns**
+in *Gallery and storage*.
+
 Thumbnails, infinite scroll, search (name, caption, prompt), favorites, long-press to multi-select.
 The viewer is full-screen: pinch / double-tap zoom, swipe left-right to browse, swipe down to close,
 tap to hide controls, big touch targets, and a tap-through guard. The floating bubble is draggable, remembers
@@ -36,7 +48,7 @@ its position and comes back automatically when the gallery closes.
 ## Layout
 ```
 manifest.json  index.js  style.css  README.md
-src/ agent.js  chat.js  comfy.js  config.js  prefilter.js
-     gallery.js  dialogs.js  ui.js  bus.js  util.js
+src/ agent.js  chat.js  comfy.js  config.js  prefilter.js  stb.js
+     gallery.js  dialogs.js  shadow.js  ui-css.js  ui.js  bus.js  util.js
 ```
 (`settings.html` was never loaded by SillyTavern and has been removed; the panel is built in `ui.js`.)

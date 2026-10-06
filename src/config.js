@@ -125,6 +125,9 @@ const DEFAULTS = {
 
     // UI / storage
     showBubble: true,
+    uiScale: 100,                  // gallery/viewer size, percent
+    galleryColumns: 'auto',        // auto | 1 | 2 | 3 | 4
+    lockSend: 'all',               // all | eval | off  (turn Send into Stop while the agent works)
     bubblePos: null,               // { side: 'left'|'right', y: 0..1 }
     thumbnails: true,
     deleteFilesOnRemove: false,

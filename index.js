@@ -2,8 +2,10 @@ import { setupUI } from './src/ui.js';
 import { getSettings } from './src/config.js';
 import { getCtx } from './src/util.js';
 import {
-    handleNewMessage, illustrateMessage, rerollImage, resetAgentState, syncMode2Injection
+    handleNewMessage, illustrateMessage, rerollImage, resetAgentState, syncMode2Injection, cancelAll
 } from './src/agent.js';
+import { initSendBridge, holdSendButton, releaseSendButton } from './src/stb.js';
+import { on } from './src/bus.js';
 import { decorateChat, stripTagsInMessage } from './src/chat.js';
 import { openViewerByUrl } from './src/gallery.js';
 
@@ -66,6 +68,14 @@ jQuery(async () => {
             setTimeout(() => handleNewMessage(id), 120);   // let ST finish rendering the message first
         });
     }
+
+    // --- SillyTavern's Send button doubles as the agent's Stop button ------------
+    initSendBridge({ onUserStop: cancelAll });
+    on('status', (state) => {
+        const mode = getSettings().lockSend;
+        const want = mode !== 'off' && (state === 'evaluating' || (state === 'generating' && mode === 'all'));
+        want ? holdSendButton() : releaseSendButton();
+    });
 
     syncMode2Injection();
     watchChat();

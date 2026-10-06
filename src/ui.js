@@ -73,6 +73,11 @@ function buildHtml() {
         ${chk('interactiveReview', 'Review and edit the prompt before generating')}
         ${sel('deliveryMode', 'Delivery', [['attached', 'Append to the assistant message'], ['separate', 'Separate comment card']])}
         ${sel('toasts', 'Notifications', [['normal', 'Normal'], ['quiet', 'Quiet (errors and warnings only)']])}
+        ${sel('lockSend', 'Send button while the agent works', [
+            ['all', 'Turn into Stop (during LLM decision and image rendering)'],
+            ['eval', 'Turn into Stop (during LLM decision only)'],
+            ['off', 'Leave the Send button alone']])}
+        <small class="ia-muted">Pressing Stop cancels the agent's current and queued work, just like stopping a roleplay reply.</small>
       `, true)}
 
       ${section('fa-brain', 'Evaluator LLM', `
@@ -138,6 +143,8 @@ function buildHtml() {
 
       ${section('fa-images', 'Gallery and storage', `
         ${chk('showBubble', 'Show the floating gallery bubble')}
+        ${num('uiScale', 'Gallery size (% of normal; raise it if controls feel small)', 80, 160, 5)}
+        ${sel('galleryColumns', 'Gallery columns', [['auto', 'Automatic'], ['1', '1'], ['2', '2'], ['3', '3'], ['4', '4']])}
         ${chk('thumbnails', 'Create small thumbnails (much faster gallery on phones)')}
         ${chk('deleteFilesOnRemove', 'Also delete image files from the server when removing from the gallery', 'Chat messages that still contain those images will show broken links.')}
         <button type="button" id="ia_repair" class="menu_button"><i class="fa-solid fa-screwdriver-wrench"></i> Repair old images</button>
@@ -185,7 +192,7 @@ function onSettingChanged(key) {
     if (['enabled', 'agentMode', 'mode2Inject', 'mode2InjectionText'].includes(key)) syncMode2Injection();
     if (['llmProvider', 'imageBackend', 'comfyTransport'].includes(key)) refreshVisibility();
     if (key === 'llmProvider') refreshProfiles();
-    if (key === 'showBubble') emit('ui');
+    if (['showBubble', 'uiScale', 'galleryColumns'].includes(key)) emit('ui');
 }
 
 const HINTS = {
@@ -205,7 +212,10 @@ function refreshVisibility() {
 
 function refreshProfiles() {
     const s = getSettings();
-    const profiles = getCtx().extensionSettings?.connectionManager?.profiles || [];
+    const ctx = getCtx();
+    let profiles = [];
+    try { profiles = ctx.ConnectionManagerRequestService?.getSupportedProfiles?.() || []; } catch (_) { /* fall back below */ }
+    if (!profiles.length) profiles = ctx.extensionSettings?.connectionManager?.profiles || [];
     const $sel = $('[data-ia="connectionProfile"]').empty().append('<option value="">(none)</option>');
     profiles.forEach(p => $sel.append(`<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}</option>`));
     $sel.val(s.connectionProfile || '');
