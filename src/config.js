@@ -1,11 +1,5 @@
 const SETTINGS_KEY = 'illustration_agent_settings';
 
-// ---------------------------------------------------------------------------
-// Default ComfyUI API workflow (UNET + CLIP + VAE split loading, KSampler).
-// Macros such as %prompt% / %seed% are substituted at generation time.
-// Numeric macros (%seed%, %steps%, %cfg%, %width%, ...) are injected as real
-// JSON numbers, so ComfyUI type validation passes.
-// ---------------------------------------------------------------------------
 const DEFAULT_COMFY_WORKFLOW = {
     "3": {
         "class_type": "KSampler",
@@ -80,11 +74,6 @@ const DEFAULT_COMFY_WORKFLOW = {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Default evaluator schemas, one per agent mode. Each must instruct the LLM
-// to answer with a single JSON object containing:
-//   decision, description, prompt, negativePrompt, aspectRatio
-// ---------------------------------------------------------------------------
 const DEFAULT_PROMPT_MODE1 =
 `You are a strict visual director deciding whether the latest roleplay turn warrants a generated illustration.
 Respond ONLY with one JSON object, no commentary:
@@ -135,8 +124,6 @@ const defaultSettings = {
     interactiveReview: false,
     pipelinePhase: 'post',
 
-    // Fast pre-filter: in Mode 1, skip the LLM evaluation entirely when the
-    // recent turns contain no visual/photography cues.
     fastGate: true,
 
     resPortraitW: 832,
@@ -147,7 +134,7 @@ const defaultSettings = {
     resSquareH: 1024,
 
     comfyUrl: 'http://127.0.0.1:8188',
-    comfyRewriteHost: false, // opt-in host rewrite
+    comfyRewriteHost: true,
     comfyModel: 'anima-turbo-v1.1.safetensors',
     comfyClip: 'Qwen3-0.6B-heretic-abliterated-uncensored.i1-Q6_K.gguf',
     comfyVae: 'qwen_image_vae.safetensors',
@@ -204,7 +191,6 @@ export function saveSettings() {
                 context.saveSettingsDebounced();
             }
         }
-        // NOTE: no localStorage mirror. extensionSettings is authoritative.
     } catch (e) {
         console.error('[Illustration Agent] Error saving settings', e);
     }
@@ -226,7 +212,6 @@ export function getGalleryUrlsSet() {
 export function saveGalleryRecord(record) {
     const s = getSettings();
     if (!Array.isArray(s.gallery)) s.gallery = [];
-    // Guard against accidentally storing huge base64 payloads.
     delete record.base64Backup;
     s.gallery.unshift(record);
     saveSettings();

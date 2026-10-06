@@ -130,6 +130,11 @@
     100% { box-shadow: 0 0 0 0 rgba(108, 92, 231, 0); }
 }
 
+/* Modal Z-Index Overrides for dynamically injected modals */
+#ia_review_modal, #ia_batch_picker_modal {
+    z-index: 2147483641 !important;
+}
+
 /* Floating Window Gallery */
 #ia_gallery_modal {
     position: fixed;
@@ -145,7 +150,7 @@
     background: var(--SmartThemeBlurTintColor, #1e1e24);
     border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: 12px;
-    z-index: 99999;
+    z-index: 2147483630 !important;
     box-shadow: 0 12px 40px rgba(0, 0, 0, 0.85);
     display: flex;
     flex-direction: column;
@@ -272,7 +277,7 @@
     padding: 16px;
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    grid-auto-rows: max-content; /* CRITICAL: Allows cards to expand fully and stops squishing */
+    grid-auto-rows: max-content;
     gap: 16px;
     align-content: start;
 }
@@ -319,7 +324,7 @@
 .ia-card-img-wrap {
     position: relative;
     width: 100%;
-    aspect-ratio: 1 / 1; /* CRITICAL: Forces a perfect square thumbnail */
+    aspect-ratio: 1 / 1;
     flex-shrink: 0;
     border-bottom: 2px solid rgba(255, 255, 255, 0.1);
     background: rgba(0, 0, 0, 0.5);
@@ -328,7 +333,7 @@
 .ia-card-img-wrap img {
     width: 100%;
     height: 100%;
-    object-fit: cover; /* Centers the image inside the square nicely */
+    object-fit: cover;
     display: block;
     cursor: pointer;
 }
@@ -338,7 +343,7 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    flex: 1; /* Allows it to fill the rest of the card naturally */
+    flex: 1;
 }
 
 .ia-desc-text {
@@ -350,8 +355,6 @@
     padding: 8px;
     border-radius: 6px;
     margin-top: 4px;
-
-    /* Safely wrap to 2 lines without distorting layout */
     white-space: normal;
     display: -webkit-box;
     -webkit-line-clamp: 2;
@@ -362,7 +365,7 @@
 .ia-card-actions {
     display: flex;
     gap: 6px;
-    margin-top: auto; /* Pushes buttons precisely to the bottom of the card */
+    margin-top: auto;
 }
 
 .ia-card-btn {
@@ -452,24 +455,6 @@
 }
 
 /* Batch Picker Modal */
-#ia_batch_picker_modal {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 90vw;
-    max-width: 800px;
-    max-height: 85vh;
-    background: var(--SmartThemeBlurTintColor, #1e1e24);
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 12px;
-    z-index: 100000;
-    padding: 16px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.85);
-    display: flex;
-    flex-direction: column;
-}
-
 .ia-batch-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -498,12 +483,12 @@
     display: block;
 }
 
-/* Lightbox Backdrop (tap outside to dismiss, esp. on mobile) */
+/* Lightbox Backdrop */
 #ia_lightbox_backdrop {
     position: fixed;
     inset: 0;
     background: rgba(0, 0, 0, 0.55);
-    z-index: 999999;
+    z-index: 2147483640 !important;
     backdrop-filter: blur(3px);
     -webkit-backdrop-filter: blur(3px);
 }
@@ -516,12 +501,12 @@
     transform: translate(-50%, -50%);
     width: 95vw;
     max-width: 1200px;
-    height: 90vh; /* Will map to 100dvh on mobile */
+    height: 90vh;
     max-height: 900px;
     background: rgba(15, 15, 20, 0.95);
     border: 1px solid rgba(255, 255, 255, 0.2);
     border-radius: 12px;
-    z-index: 1000000 !important;
+    z-index: 2147483641 !important;
     box-shadow: 0 15px 50px rgba(0, 0, 0, 0.9);
     display: flex;
     flex-direction: column;
@@ -540,7 +525,7 @@
 
 .ia-lightbox-content {
     flex: 1 1 auto;
-    min-height: 0; /* CRITICAL: Prevents flexbox overflow */
+    min-height: 0;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -557,7 +542,7 @@
 }
 
 .ia-lightbox-footer {
-    flex-shrink: 0; /* Ensures the footer stays strictly locked to bottom on mobile */
+    flex-shrink: 0;
     padding: 16px;
     background: rgba(0, 0, 0, 0.75);
     border-top: 1px solid rgba(255, 255, 255, 0.15);
@@ -587,10 +572,9 @@
 
 /* Mobile Responsive (< 768px) */
 @media (max-width: 768px) {
-    /* Gallery and batch picker stay fullscreen on mobile... */
-    #ia_gallery_modal, #ia_batch_picker_modal {
+    #ia_gallery_modal, #ia_batch_picker_modal, #ia_lightbox_modal {
         width: 100vw !important;
-        height: 100dvh !important; /* Perfect height scaling on mobile Safari/Chrome */
+        height: 100dvh !important;
         max-width: 100vw !important;
         max-height: 100dvh !important;
         top: 0 !important;
@@ -601,22 +585,6 @@
         resize: none !important;
     }
 
-    /* ...but the image viewer opens as a SMALLER floating window, inset from
-       the gallery edges, so a stray tap near the screen edge can never hit a
-       control behind it. Tapping the dimmed backdrop dismisses it. */
-    #ia_lightbox_modal {
-        width: 92vw !important;
-        height: 85dvh !important;
-        max-width: 92vw !important;
-        max-height: 85dvh !important;
-        top: 50% !important;
-        left: 50% !important;
-        transform: translate(-50%, -50%) !important;
-        border-radius: 14px !important;
-        border: 1px solid rgba(255, 255, 255, 0.25) !important;
-    }
-
-    /* Search bar moves to its own full-width row under the gallery title. */
     .ia-gallery-search-wrap {
         order: 3;
         flex-basis: 100%;
