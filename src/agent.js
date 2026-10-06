@@ -16,9 +16,12 @@ import { waitForStIdle } from './stb.js';
 
 const AGENT_SYSTEM_PROMPT =
     'You are an expert anime and visual director generating precise image generation prompts for diffusion models. ' +
-    'Faithfully extract and preserve all character appearance details (hair color, hair style and length, eye color, facial features, body type, clothing, accessories) from the Character Reference. ' +
-    'Accurately capture the current scene depicted in the latest response (action, pose, expression, current clothing/attire, environment/setting, lighting, camera angle). ' +
-    'If the scene describes an outfit change or specific attire, depict that outfit; otherwise use the character reference outfit. ' +
+    'CRITICAL RULES for character fidelity: ' +
+    '(1) Extract EVERY physical trait from the [CHARACTER REFERENCE] and repeat them in the prompt — hair color, hair style, hair length, eye color, facial features, body type/build, skin tone, and habitual clothing/accessories. ' +
+    '(2) NEVER invent or omit character traits. If a trait is not stated, infer it consistently from the current scene, not from your imagination. ' +
+    '(3) Always include the same core appearance tags on every image of the same character so they look identical across images. ' +
+    'Accurately capture the current scene from the latest response (action, pose, expression, current clothing/attire, environment/setting, lighting, camera angle). ' +
+    'If the scene describes an outfit change or specific attire, depict that outfit; otherwise use the Character Reference outfit. ' +
     'Respond ONLY with the requested JSON object.';
 
 const MAX_MSG_CHARS = 4000;
@@ -26,9 +29,9 @@ const MAX_CHAR_DESC = 4000;
 const MAX_QUEUE = 3;
 const MODE2_KEY = 'illustration_agent_mode2';
 
-let runToken = 0;          
-let evalAbort = null;      
-const queue = [];          
+let runToken = 0;
+let evalAbort = null;
+const queue = [];
 let queueRunning = false;
 let currentJobAbort = null;
 
@@ -116,7 +119,7 @@ export async function queryAgentLLM(prompt, signal = null) {
                 body: JSON.stringify({
                     model: s.customLlmModel,
                     messages: [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
-                    temperature: 0.2, max_tokens: 900 // Increased token limit for rich prompts
+                    temperature: 0.2, max_tokens: 900
                 })
             });
             if (!resp.ok) throw new Error(`Custom LLM HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
@@ -245,20 +248,45 @@ function findCharacter(ctx, msg) {
     return chars.length === 1 ? chars[0] : null;
 }
 
-function extractCharacterDetails(ch) {
+// ---------------------------------------------------------------------------
+//  Character card: read every field, expand {{char}} / {{description}} / ...
+// ---------------------------------------------------------------------------
+function expandCardText(text, ch, ctx) {
+    if (!text) return '';
+    const data = ch?.data || ch || {};
+    return String(text)
+        .replace(/\{\{char\}\}/gi, ch?.name || '')
+        .replace(/\{\{user\}\}/gi, ctx?.name1 || 'User')
+        .replace(/\{\{description\}\}/gi, data.description || '')
+        .replace(/\{\{personality\}\}/gi, data.personality || '')
+        .replace(/\{\{scenario\}\}/gi, data.scenario || '')
+        .replace(/\{\{persona\}\}/gi, ctx?.persona || '')
+        .replace(/\{\{time\}\}/gi, '')
+        .replace(/\{\{date\}\}/gi, '');
+}
+
+// Reads ALL card fields (V1 & V2) and expands macros inside them.
+function extractCharacterDetails(ch, ctx) {
     if (!ch) return '';
+    const data = ch.data || ch;
     const parts = [];
-    const desc = ch.data?.description || ch.description || '';
-    if (desc.trim()) parts.push(desc.trim());
 
-    const personality = ch.data?.personality || ch.personality || '';
-    if (personality.trim()) parts.push(`Personality & Traits:\n${personality.trim()}`);
+    const add = (label, raw) => {
+        if (!raw) return;
+        const v = expandCardText(String(raw).trim(), ch, ctx);
+        if (!v) return;
+        parts.push(label ? `${label}\n${v}` : v);
+    };
 
-    const scenario = ch.data?.scenario || ch.scenario || '';
-    if (scenario.trim()) parts.push(`Scenario & Setting:\n${scenario.trim()}`);
+    add('', data.description || ch.description);
+    add('Personality & Traits:', data.personality || ch.personality);
+    add('Scenario & Setting:', data.scenario || ch.scenario);
 
-    const tags = Array.isArray(ch.data?.tags) ? ch.data.tags.filter(Boolean).join(', ') : (ch.tags || '');
-    if (tags.trim()) parts.push(`Visual Tags:\n${tags.trim()}`);
+    const tags = Array.isArray(data.tags) ? data.tags.filter(Boolean).join(', ') : (ch.tags || '');
+    add('Visual Tags:', tags);
+
+    // Creator notes often contain the only hard appearance info on some cards.
+    add('Creator Notes:', data.creator_notes);
 
     return parts.join('\n\n');
 }
@@ -278,13 +306,55 @@ function compact(m, s, ctx) {
     return `${speaker}: ${truncate(t, 2500)}`;
 }
 
+// ---------------------------------------------------------------------------
+//  Prompt macros — usable inside the evaluator instructions in the settings.
+//  %character%  %character_card%  %character_description%  %character_personality%
+//  %character_scenario%  %character_tags%  %character_creator_notes%
+//  %user%  %user_persona%
+// ---------------------------------------------------------------------------
+function expandPromptMacros(template, { ch, ctx, msg }) {
+    if (!template) return template;
+    const data = ch?.data || ch || {};
+    const tags = Array.isArray(data.tags) ? data.tags.filter(Boolean).join(', ') : (ch?.tags || '');
+
+    const card = [
+        data.description || '',
+        data.personality ? `Personality & Traits:\n${data.personality}` : '',
+        data.scenario    ? `Scenario & Setting:\n${data.scenario}` : '',
+        tags             ? `Visual Tags:\n${tags}` : '',
+        data.creator_notes ? `Creator Notes:\n${data.creator_notes}` : ''
+    ].filter(Boolean).join('\n\n');
+
+    const subs = {
+        '%character%': ch?.name || msg?.name || '',
+        '%character_card%': card,
+        '%character_description%': data.description || '',
+        '%character_personality%': data.personality || '',
+        '%character_scenario%': data.scenario || '',
+        '%character_tags%': tags,
+        '%character_creator_notes%': data.creator_notes || '',
+        '%user%': ctx?.name1 || 'User',
+        '%user_persona%': ctx?.persona || ''
+    };
+
+    // Replace longest keys first so %character_description% is not eaten by %character%.
+    let out = String(template);
+    for (const k of Object.keys(subs).sort((a, b) => b.length - a.length)) {
+        out = out.split(k).join(String(subs[k] ?? ''));
+    }
+    return out;
+}
+
 function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
     const s = getSettings();
     const look = Math.max(1, parseInt(s.lookback) || 3);
     const recent = chat.slice(Math.max(0, idx - look), idx);
     const ch = findCharacter(ctx, msg);
-    const charDesc = extractCharacterDetails(ch);
+    const charDesc = extractCharacterDetails(ch, ctx);
     const userDesc = extractUserDetails(ctx);
+
+    // Expand macros in the user-configured instructions before sending.
+    const expandedSchema = expandPromptMacros(schema, { ch, ctx, msg });
 
     let tagBlock = '';
     if (tags?.has && (mode === 'mode2' || mode === 'forced-tags')) {
@@ -298,11 +368,11 @@ function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
     if (!s.includeThinking) last = stripThinkingTags(last);
     last = stripImageMarkdown(last);
 
-    return `${schema}
+    return `${expandedSchema}
 
 [CHARACTER REFERENCE]
 Primary Character: ${ch?.name || msg.name || 'Character'}
-${truncate(charDesc, MAX_CHAR_DESC)}
+${truncate(charDesc, MAX_CHAR_DESC) || '(no card data — infer only from the scene, and stay consistent)'}
 
 [USER REFERENCE]
 ${userDesc}
@@ -333,8 +403,8 @@ export async function handleNewMessage(idx) {
     const msg = chat?.[idx];
     if (!isAssistant(msg)) return;
 
-    const tags = readTags(msg);              
-    if (tags.has) stripTagsInMessage(idx);   
+    const tags = readTags(msg);
+    if (tags.has) stripTagsInMessage(idx);
     await evaluate({ idx, tags, force: false });
 }
 
@@ -358,11 +428,11 @@ async function evaluate({ idx, tags, force }) {
     const sig = contentSig(msg);
 
     if (!force) {
-        if (msg.extra?.ia_sig === sig) return;                                           
-        if (mode === 'mode2' && !tags.has) return;                                       
+        if (msg.extra?.ia_sig === sig) return;
+        if (mode === 'mode2' && !tags.has) return;
         if (mode === 'mode3' && !intervalDue(chat, idx, s.triggerInterval)) return;
         if (mode === 'mode1') {
-            if (turnsSinceIllustration(chat, idx) < (s.cooldown || 0)) return;           
+            if (turnsSinceIllustration(chat, idx) < (s.cooldown || 0)) return;
             if (s.fastGate !== false) {
                 const prev = chat[idx - 1];
                 const gate = passesGate({
@@ -377,13 +447,11 @@ async function evaluate({ idx, tags, force }) {
         msg.extra.ia_sig = sig;
     }
 
-    // FIXED: Never overwrite the user's custom prompt with promptMode3 on manual illustrations.
-    // Always use the prompt schema that matches the active agent mode.
     const schema = { mode1: s.promptMode1, mode2: s.promptMode2, mode3: s.promptMode3 }[mode] || s.promptMode1;
     const tagsMode = force && tags.has ? 'forced-tags' : mode;
 
     await waitForStIdle();
-    if (getCtx().chat?.[idx] !== msg) return;                                            
+    if (getCtx().chat?.[idx] !== msg) return;
 
     const myToken = ++runToken;
     const target = snapshotTarget(idx);
@@ -398,19 +466,19 @@ async function evaluate({ idx, tags, force }) {
             result = resultFromTags(tags);
         } else {
             const fullPrompt = buildPrompt({ schema, ctx, chat, idx, msg, tags, mode: tagsMode });
-	    console.log('[Illustration Agent Prompt Sent]', fullPrompt); // Prints the exact character card & context to your log
-	    const raw = await queryAgentLLM(fullPrompt, ac.signal);
-            if (myToken !== runToken || getCtx().chatId !== target.chatId) return;       
+            console.log('[Illustration Agent Prompt Sent]', fullPrompt);
+            const raw = await queryAgentLLM(fullPrompt, ac.signal);
+            if (myToken !== runToken || getCtx().chatId !== target.chatId) return;
             try { result = parseAgentResult(raw); }
             catch (parseErr) {
-                if (!tags.has) throw parseErr;                                           
+                if (!tags.has) throw parseErr;
                 console.warn('[Illustration Agent] unparseable LLM output, using tag text directly', parseErr);
                 result = resultFromTags(tags);
             }
         }
     } catch (e) {
         if (e?.name === 'AbortError') return;
-        if (msg.extra) delete msg.extra.ia_sig;                                          
+        if (msg.extra) delete msg.extra.ia_sig;
         console.error('[Illustration Agent] evaluation failed', e);
         notify('error', 'Evaluation failed: ' + e.message);
         return;
@@ -436,7 +504,7 @@ async function evaluate({ idx, tags, force }) {
     }
 
     msg.extra = msg.extra || {};
-    msg.extra.ia_done = true;                                                            
+    msg.extra.ia_done = true;
     const character = findCharacter(ctx, msg)?.name || msg.name;
 
     enqueue(async (signal) => {

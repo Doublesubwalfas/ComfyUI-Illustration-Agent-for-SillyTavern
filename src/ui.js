@@ -138,6 +138,12 @@ function buildHtml() {
         <label class="ia-field"><span>Evaluator instructions (edits apply to the current mode)</span>
           <textarea id="ia_schema" class="text_pole ia-mono" rows="10" spellcheck="false"></textarea></label>
         <div id="ia_schema_badges" class="ia-badges"></div>
+        <small class="ia-muted">
+          Macros you can use inside the instructions above — they get filled from the active character card and persona:<br>
+          <code>%character%</code> <code>%character_card%</code> <code>%character_description%</code>
+          <code>%character_personality%</code> <code>%character_scenario%</code> <code>%character_tags%</code>
+          <code>%character_creator_notes%</code> <code>%user%</code> <code>%user_persona%</code>
+        </small>
         <button type="button" id="ia_reset_schema" class="menu_button">Reset to default</button>
       `)}
 
