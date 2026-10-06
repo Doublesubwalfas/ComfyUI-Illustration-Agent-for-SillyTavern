@@ -91,7 +91,7 @@ label.f > span { opacity: .8; }
 /* ---------- Viewer ---------- */
 .viewer { position: fixed; inset: 0; background: #06060a; color: #fff; pointer-events: auto; z-index: 3; touch-action: none; overscroll-behavior: contain; user-select: none; -webkit-user-select: none; }
 .stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; touch-action: none; }
-.stage img { max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center; will-change: transform; -webkit-user-drag: none; }
+.stage img { max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center; will-change: transform; -webkit-user-drag: none; pointer-events: none; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .verr { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .6em; padding: 2em; text-align: center; opacity: .92; pointer-events: none; }
 .verr .i { width: 2.4em; height: 2.4em; opacity: .6; }
 .vtop, .vbottom, .vnav { transition: opacity .2s ease; }
@@ -140,6 +140,18 @@ label.f > span { opacity: .8; }
     .grid { grid-template-columns: var(--cols, repeat(2, minmax(0, 1fr))); gap: .6em; padding: .6em calc(env(safe-area-inset-right, 0px) + .6em) calc(env(safe-area-inset-bottom, 0px) + .6em) calc(env(safe-area-inset-left, 0px) + .6em); }
     .dlg-overlay { align-items: flex-end; padding: 0; }
     .dlg { width: 100%; border-radius: 16px 16px 0 0; max-height: 92%; }
+
+    /* Viewer on mobile */
+    .viewer { width: 100vw; height: 100dvh; max-height: 100dvh; }
+    .vtop { padding: calc(env(safe-area-inset-top, 0px) + .35em) calc(env(safe-area-inset-right, 0px) + .6em) .8em calc(env(safe-area-inset-left, 0px) + .8em); }
+    .vclose { width: 2.7em; height: 2.7em; }
+    .vnav { display: none; } /* On mobile, swipe gestures are used to navigate */
+    .vbottom { padding: 1.2em calc(env(safe-area-inset-right, 0px) + .4em) calc(env(safe-area-inset-bottom, 0px) + .4em) calc(env(safe-area-inset-left, 0px) + .4em); }
+    .vdesc { font-size: .84em; margin-bottom: .4em; }
+    .tools { gap: .25em; width: 100%; }
+    .tool { min-height: 3.2em; border-radius: 10px; padding: 2px 2px; }
+    .tool .i { width: 1.15em; height: 1.15em; }
+    .tool span { font-size: .56em; }
 }
 @media (min-width: 701px) { .searchrow { display: flex; } #g_search_toggle { display: none; } }
 `;

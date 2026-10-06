@@ -15,12 +15,14 @@ import { waitForStIdle } from './stb.js';
 // ===========================================================================
 
 const AGENT_SYSTEM_PROMPT =
-    'You are an expert anime and visual director generating image generation prompts. ' +
-    'Faithfully extract and preserve all character appearance details (hair color and style, eye color, facial features, body type, clothing, and accessories) from the Character Reference. ' +
+    'You are an expert anime and visual director generating precise image generation prompts for diffusion models. ' +
+    'Faithfully extract and preserve all character appearance details (hair color, hair style and length, eye color, facial features, body type, clothing, accessories) from the Character Reference. ' +
+    'Accurately capture the current scene depicted in the latest response (action, pose, expression, current clothing/attire, environment/setting, lighting, camera angle). ' +
+    'If the scene describes an outfit change or specific attire, depict that outfit; otherwise use the character reference outfit. ' +
     'Respond ONLY with the requested JSON object.';
 
-const MAX_MSG_CHARS = 1200;
-const MAX_CHAR_DESC = 3500; // Expanded so full card appearance isn't cut off
+const MAX_MSG_CHARS = 4000;
+const MAX_CHAR_DESC = 4000;
 const MAX_QUEUE = 3;
 const MODE2_KEY = 'illustration_agent_mode2';
 
@@ -221,28 +223,68 @@ export function turnsSinceIllustration(chat, idx) {
 
 function findCharacter(ctx, msg) {
     const chars = ctx.characters || [];
-    if (msg.original_avatar) { const c = chars.find(x => x.avatar === msg.original_avatar); if (c) return c; }
-    if (msg.name) { const c = chars.find(x => x.name === msg.name); if (c) return c; }
-    return ctx.characterId != null ? chars[ctx.characterId] : null;
+    if (!chars.length) return null;
+    if (msg.original_avatar) {
+        const c = chars.find(x => x.avatar === msg.original_avatar || x.data?.avatar === msg.original_avatar);
+        if (c) return c;
+    }
+    if (msg.name) {
+        const msgName = msg.name.trim().toLowerCase();
+        const c = chars.find(x =>
+            (x.name && x.name.trim().toLowerCase() === msgName) ||
+            (x.data?.name && x.data.name.trim().toLowerCase() === msgName)
+        );
+        if (c) return c;
+    }
+    const chId = ctx.characterId ?? ctx.this_chid;
+    if (chId != null) {
+        if (typeof chId === 'number' && chars[chId]) return chars[chId];
+        const c = chars.find(x => x.id === chId || x.avatar === chId || String(x.name).toLowerCase() === String(chId).toLowerCase());
+        if (c) return c;
+    }
+    return chars.length === 1 ? chars[0] : null;
 }
 
-function compact(m, s) {
+function extractCharacterDetails(ch) {
+    if (!ch) return '';
+    const parts = [];
+    const desc = ch.data?.description || ch.description || '';
+    if (desc.trim()) parts.push(desc.trim());
+
+    const personality = ch.data?.personality || ch.personality || '';
+    if (personality.trim()) parts.push(`Personality & Traits:\n${personality.trim()}`);
+
+    const scenario = ch.data?.scenario || ch.scenario || '';
+    if (scenario.trim()) parts.push(`Scenario & Setting:\n${scenario.trim()}`);
+
+    const tags = Array.isArray(ch.data?.tags) ? ch.data.tags.filter(Boolean).join(', ') : (ch.tags || '');
+    if (tags.trim()) parts.push(`Visual Tags:\n${tags.trim()}`);
+
+    return parts.join('\n\n');
+}
+
+function extractUserDetails(ctx) {
+    const name = ctx.name1 || 'User';
+    const persona = ctx.persona || ctx.power_user?.persona_description || '';
+    if (!persona.trim()) return `User Name: ${name}`;
+    return `User (${name}) Reference:\n${truncate(persona.trim(), 800)}`;
+}
+
+function compact(m, s, ctx) {
     let t = cleanTriggerTags(m.mes || '');
     if (!s.includeThinking) t = stripThinkingTags(t);
     t = stripImageMarkdown(t);
-    return `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${truncate(t, MAX_MSG_CHARS)}`;
+    const speaker = m.name || (m.is_user ? (ctx?.name1 || 'User') : 'Assistant');
+    return `${speaker}: ${truncate(t, 2500)}`;
 }
 
 function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
     const s = getSettings();
     const look = Math.max(1, parseInt(s.lookback) || 3);
-    const recent = chat.slice(Math.max(0, idx - look + 1), idx + 1);
+    const recent = chat.slice(Math.max(0, idx - look), idx);
     const ch = findCharacter(ctx, msg);
-    const descParts = [
-        ch?.data?.description || ch?.description,
-        ch?.data?.personality || ch?.personality
-    ].filter(Boolean);
-    const desc = descParts.join('\n\n');
+    const charDesc = extractCharacterDetails(ch);
+    const userDesc = extractUserDetails(ctx);
 
     let tagBlock = '';
     if (tags?.has && (mode === 'mode2' || mode === 'forced-tags')) {
@@ -258,17 +300,20 @@ function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
 
     return `${schema}
 
-Character Reference:
-Name: ${ch?.name || msg.name || 'Character'}
-Appearance & Traits:
-${truncate(desc, MAX_CHAR_DESC)}
+[CHARACTER REFERENCE]
+Primary Character: ${ch?.name || msg.name || 'Character'}
+${truncate(charDesc, MAX_CHAR_DESC)}
 
-Recent Isolated Context:
-${recent.map(m => compact(m, s)).join('\n\n')}
+[USER REFERENCE]
+${userDesc}
+
+[RECENT CONTEXT (for continuity)]
+${recent.map(m => compact(m, s, ctx)).join('\n\n') || '(Start of conversation)'}
 ${tagBlock}
-<assistant_response>
-${truncate(last, MAX_MSG_CHARS)}
-</assistant_response>`;
+[CURRENT ASSISTANT RESPONSE TO ILLUSTRATE]
+Character Speaking/Acting: ${ch?.name || msg.name || 'Character'}
+Response:
+${truncate(last, MAX_MSG_CHARS)}`;
 }
 
 function sizeFor(aspect, s) {

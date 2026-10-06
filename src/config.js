@@ -44,10 +44,13 @@ ${JSON_SHAPE}
 Rules:
 - decision is "yes" ONLY when the turn contains an explicit visual beat: a photo/selfie, a deliberate pose, an outfit change, an intimate moment, a striking physical action, or a dramatic scene shift.
 - Pure dialogue, contemplation, or minor gestures = "no" (leave "prompt" empty).
-- "prompt": comma-separated booru tags. You MUST construct a richly detailed prompt:
-  * Character: explicitly include hair color, hairstyle, eye color, body type, expression, and current outfit matching the Character Reference.
-  * Scene: pose, camera angle (close-up, wide shot, Dutch angle), lighting (cinematic, volumetric, soft rim light), and environment.
-- "description": 1-2 sentence grounded scene description.
+- "prompt": comma-separated booru tags matching the character and current scene:
+  * Subject count: e.g. "1girl, solo" or "1boy, solo" (or "1girl, 1boy, couple" if interacting with user).
+  * Character appearance: explicitly include exact hair color, hair style/length, eye color, body type, and facial expression matching the Character Reference.
+  * Current Outfit: the clothing actually worn in the current scene (honor any outfit changes described in the response; otherwise use the Character Reference outfit).
+  * Scene & Action: current pose, action, environment/setting, lighting (e.g. cinematic lighting, soft rim light), and camera framing (e.g. close-up, medium shot, wide shot, Dutch angle).
+  * Focus strictly on the single climactic visual moment/frame of the latest response, not a summary of past events.
+- "description": 1-2 sentence grounded scene description of the depicted moment.
 - "negativePrompt": extra tags to avoid, or "" if none.
 - "aspectRatio": portrait for characters/selfies, landscape for scenery/groups, square otherwise.`,
 
@@ -59,7 +62,10 @@ ${JSON_SHAPE.replace('"yes"|"no"', '"yes"')}
 
 Rules:
 - Always set decision to "yes".
-- "prompt": comprehensive booru tags translating the extracted description. You MUST incorporate the character's exact physical traits (hair color/style, eye color, body, clothing) from the Character Reference. Include pose, lighting, and camera angle.
+- "prompt": comprehensive booru tags translating the extracted description:
+  * Subject count: e.g. "1girl, solo" or "1boy, solo" or "1girl, 1boy".
+  * Character appearance: faithfully include exact hair color, hair style/length, eye color, body type matching the Character Reference.
+  * Scene & Outfit: exact clothing, pose, action, expression, environment, lighting, and camera angle matching the extracted description and scene.
 - "description": 1-2 sentence caption summarizing the image.
 - "negativePrompt": extra tags to avoid, or "" if none.
 - "aspectRatio": portrait for people/selfies, landscape for scenery/groups, square otherwise.`,
@@ -71,7 +77,11 @@ ${JSON_SHAPE.replace('"yes"|"no"', '"yes"')}
 
 Rules:
 - Always set decision to "yes".
-- "prompt": highly detailed comma-separated booru tags. You MUST explicitly include hair color, eye color, hairstyle, body type, and clothing matching the Character Reference, plus pose, camera angle, and environment lighting.
+- "prompt": highly detailed comma-separated booru tags matching the character and scene:
+  * Subject count: e.g. "1girl, solo" or "1boy, solo" or "1girl, 1boy".
+  * Character appearance: explicitly include hair color, eye color, hairstyle, body type matching the Character Reference.
+  * Current Outfit: clothing matching the current scene (or Character Reference if unchanged).
+  * Scene & Action: pose, expression, environment/setting, lighting, camera angle.
 - "description": 1-2 sentence visual description of the depicted moment.
 - "negativePrompt": extra tags to avoid, or "" if none.
 - "aspectRatio": portrait for characters/selfies, landscape for scenery/groups, square otherwise.`
@@ -160,7 +170,14 @@ function migrate(s) {
             s.workflowPresets[s.selectedWorkflowPreset] = JSON.stringify(DEFAULT_WORKFLOW, null, 2);
         }
     }
-    s.version = 3;
+    if ((s.version || 3) < 4) {
+        for (const k of ['promptMode1', 'promptMode2', 'promptMode3']) {
+            if (!s[k] || s[k].includes('Scene: pose, camera angle') || s[k].includes('You MUST incorporate the character\'s exact physical traits')) {
+                s[k] = DEFAULT_PROMPTS[k];
+            }
+        }
+    }
+    s.version = 4;
 }
 
 export function getSettings() {

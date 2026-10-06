@@ -389,24 +389,34 @@ export function openViewerByUrl(url) {
     openViewer(list, i);
 }
 
+let viewerFromGallery = false;
+
 function openViewer(list, index) {
     if (!list.length || index < 0) return;
+    viewerFromGallery = galleryOpen();
     V.list = list; V.idx = index; V.openedAt = now();
     $id('ia_viewer').classList.remove('nochrome');
     $id('ia_viewer').hidden = false;
-    $id('ia_gallery').inert = true;                       
+    hostEl().classList.add('viewer-open');
+    if (viewerFromGallery) {
+        $id('ia_gallery').hidden = true;
+    }
     show();
 }
 
 function closeViewer(silent = false) {
     if (!viewerOpen()) return;
     $id('ia_viewer').hidden = true;
-    $id('ia_gallery').inert = false;
+    hostEl().classList.remove('viewer-open');
     $id('v_img').removeAttribute('src');
     clearTimeout(V.tapTimer);
     V.list = []; V.idx = -1; V.ptrs.clear(); V.g = null; V.pinch = null;
     G.shield = now() + 450;
-    if (!silent && galleryOpen()) { renderNav(); render(true); }
+    if (viewerFromGallery) {
+        $id('ia_gallery').hidden = false;
+        if (!silent) { renderNav(); render(true); }
+    }
+    viewerFromGallery = false;
 }
 
 function resetZoom() { V.scale = 1; V.tx = 0; V.ty = 0; $id('v_img').style.transform = ''; }
@@ -455,8 +465,10 @@ function applyTransform() { $id('v_img').style.transform = `translate3d(${V.tx}p
 
 function clampPan() {
     const img = $id('v_img'), st = $id('v_stage').getBoundingClientRect();
-    const mx = Math.max(0, (img.clientWidth * V.scale - st.width) / 2);
-    const my = Math.max(0, (img.clientHeight * V.scale - st.height) / 2);
+    const iw = (img.clientWidth || st.width) * V.scale;
+    const ih = (img.clientHeight || st.height) * V.scale;
+    const mx = Math.max(0, (iw - st.width) / 2);
+    const my = Math.max(0, (ih - st.height) / 2);
     V.tx = clamp(V.tx, -mx, mx); V.ty = clamp(V.ty, -my, my);
 }
 
@@ -471,26 +483,45 @@ function zoomAt(ns, px, py) {
 }
 
 function handleTap(x, y) {
-    if (now() - V.lastTap < 300 && Math.hypot(x - V.lastX, y - V.lastY) < 40) {
+    if (now() - V.lastTap < 350 && Math.hypot(x - V.lastX, y - V.lastY) < 50) {
         clearTimeout(V.tapTimer); V.lastTap = 0;
         zoomAt(V.scale > 1 ? 1 : 2.5, x, y);
         return;
     }
     V.lastTap = now(); V.lastX = x; V.lastY = y;
-    V.tapTimer = setTimeout(toggleChrome, 280);
+    V.tapTimer = setTimeout(() => {
+        V.lastTap = 0;
+        toggleChrome();
+    }, 300);
 }
 
 function initViewerEvents() {
     const stage = $id('v_stage');
 
+    // Prevent mobile browser gesture takeover on stage
+    stage.addEventListener('touchstart', (e) => {
+        if (e.target.closest('button, .tools, .vdesc')) return;
+        e.preventDefault();
+    }, { passive: false });
+    stage.addEventListener('touchmove', (e) => {
+        if (e.target.closest('button, .tools, .vdesc')) return;
+        e.preventDefault();
+    }, { passive: false });
+
     stage.addEventListener('pointerdown', (e) => {
-        if (now() - V.openedAt < 300) return;
-        stage.setPointerCapture(e.pointerId);
+        if (now() - V.openedAt < 250) return;
+        try { stage.setPointerCapture(e.pointerId); } catch (_) {}
         V.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        if (V.ptrs.size === 1) V.g = { sx: e.clientX, sy: e.clientY, t: now(), moved: false, otx: V.tx, oty: V.ty };
-        else if (V.ptrs.size === 2) {
-            const [a, b] = [...V.ptrs.values()];
-            V.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, s: V.scale };
+
+        if (V.ptrs.size === 1) {
+            V.g = { sx: e.clientX, sy: e.clientY, lx: e.clientX, ly: e.clientY, t: now(), moved: false, otx: V.tx, oty: V.ty };
+            V.pinch = null;
+        } else if (V.ptrs.size >= 2) {
+            const [p1, p2] = [...V.ptrs.values()];
+            const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+            const midX = (p1.x + p2.x) / 2;
+            const midY = (p1.y + p2.y) / 2;
+            V.pinch = { prevD: dist, prevMidX: midX, prevMidY: midY };
             V.g = null;
         }
     });
@@ -498,34 +529,89 @@ function initViewerEvents() {
     stage.addEventListener('pointermove', (e) => {
         if (!V.ptrs.has(e.pointerId)) return;
         V.ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
-        if (V.pinch && V.ptrs.size >= 2) {
-            const [a, b] = [...V.ptrs.values()];
-            zoomAt(V.pinch.s * Math.hypot(a.x - b.x, a.y - b.y) / V.pinch.d, (a.x + b.x) / 2, (a.y + b.y) / 2);
+
+        // Two-pointer pinch & pan
+        if (V.ptrs.size >= 2 && V.pinch) {
+            const [p1, p2] = [...V.ptrs.values()];
+            const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+            const midX = (p1.x + p2.x) / 2;
+            const midY = (p1.y + p2.y) / 2;
+            const ratio = dist / V.pinch.prevD;
+            const dMidX = midX - V.pinch.prevMidX;
+            const dMidY = midY - V.pinch.prevMidY;
+
+            zoomAt(V.scale * ratio, midX, midY);
+            V.tx += dMidX;
+            V.ty += dMidY;
+            clampPan();
+            applyTransform();
+
+            V.pinch.prevD = dist;
+            V.pinch.prevMidX = midX;
+            V.pinch.prevMidY = midY;
             return;
         }
+
+        // Single finger pan / swipe
         if (!V.g) return;
-        const dx = e.clientX - V.g.sx, dy = e.clientY - V.g.sy;
-        if (Math.hypot(dx, dy) > 8) V.g.moved = true;
-        if (V.scale > 1) { V.tx = V.g.otx + dx; V.ty = V.g.oty + dy; clampPan(); applyTransform(); }
-        else if (V.g.moved) $id('v_img').style.transform = `translate3d(${dx}px,${Math.max(0, dy) * 0.6}px,0)`;
+        const dx = e.clientX - V.g.sx;
+        const dy = e.clientY - V.g.sy;
+        if (!V.g.moved && Math.hypot(dx, dy) > 12) {
+            V.g.moved = true;
+        }
+
+        if (V.scale > 1) {
+            V.tx = V.g.otx + dx;
+            V.ty = V.g.oty + dy;
+            clampPan();
+            applyTransform();
+        } else if (V.g.moved) {
+            const dampY = Math.max(0, dy) * 0.6;
+            const dampX = dx * 0.75;
+            $id('v_img').style.transform = `translate3d(${dampX}px,${dampY}px,0)`;
+        }
     });
 
     const finish = (e, cancelled) => {
         if (!V.ptrs.has(e.pointerId)) return;
+        try { if (stage.hasPointerCapture?.(e.pointerId)) stage.releasePointerCapture(e.pointerId); } catch (_) {}
         V.ptrs.delete(e.pointerId);
-        if (V.pinch && V.ptrs.size < 2) V.pinch = null;
-        if (V.ptrs.size > 0 || !V.g) return;
-        const g = V.g; V.g = null;
-        const dx = e.clientX - g.sx, dy = e.clientY - g.sy;
-        if (V.scale > 1) { if (!g.moved && !cancelled) handleTap(e.clientX, e.clientY); return; }
-        applyTransform();
-        if (cancelled) return;
-        if (!g.moved) { if (now() - g.t < 450) handleTap(e.clientX, e.clientY); }
-        else if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.4) step(dx < 0 ? 1 : -1);
-        else if (dy > 110 && dy > Math.abs(dx) * 1.4) closeViewer();
+
+        if (V.ptrs.size === 1) {
+            V.pinch = null;
+            const rem = [...V.ptrs.values()][0];
+            V.g = { sx: rem.x, sy: rem.y, lx: rem.x, ly: rem.y, t: now(), moved: false, otx: V.tx, oty: V.ty };
+            return;
+        }
+
+        if (V.ptrs.size === 0) {
+            V.pinch = null;
+            const g = V.g;
+            V.g = null;
+
+            if (V.scale > 1) {
+                clampPan();
+                applyTransform();
+                if (g && !g.moved && !cancelled) handleTap(e.clientX, e.clientY);
+                return;
+            }
+
+            applyTransform();
+            if (cancelled || !g) return;
+
+            const dx = e.clientX - g.sx;
+            const dy = e.clientY - g.sy;
+            if (!g.moved) {
+                if (now() - g.t < 450) handleTap(e.clientX, e.clientY);
+            } else if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+                step(dx < 0 ? 1 : -1);
+            } else if (dy > 90 && dy > Math.abs(dx) * 1.2) {
+                closeViewer();
+            }
+        }
     };
     stage.addEventListener('pointerup', (e) => finish(e, false));
-    stage.addEventListener('pointercancel', (e) => finish(e, true));
+    stage.addEventListener('pointercancel', (e) => finish(e, false));
     stage.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(V.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY); }, { passive: false });
 
     $id('v_close').addEventListener('click', () => closeViewer());
