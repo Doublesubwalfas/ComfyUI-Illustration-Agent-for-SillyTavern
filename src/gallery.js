@@ -110,56 +110,85 @@ function applyBubbleVisibility() {
     positionBubble();
 }
 
+// ---------------------------------------------------------------------------
+// Bubble (Mobile & Pointer Safe)
+// ---------------------------------------------------------------------------
 function positionBubble() {
     const el = $id('ia_bubble');
+    if (!el) return;
     const size = el.offsetWidth || 54;
-    const pos = getSettings().bubblePos || { side: 'right', y: 0.6 };
-    el.style.top = clamp(pos.y * window.innerHeight, 8, window.innerHeight - size - 8) + 'px';
+    const pos = getSettings().bubblePos;
+    // Guaranteed finite coordinate check to prevent disappearing bubble
+    const yVal = (pos && typeof pos.y === 'number' && Number.isFinite(pos.y)) ? pos.y : 0.6;
+    const side = (pos && pos.side === 'left') ? 'left' : 'right';
+
+    const safeTop = clamp(yVal * window.innerHeight, 10, Math.max(10, window.innerHeight - size - 10));
+    el.style.top = `${safeTop}px`;
     el.style.bottom = 'auto';
-    if (pos.side === 'left') { el.style.left = '10px'; el.style.right = 'auto'; }
+    if (side === 'left') { el.style.left = '10px'; el.style.right = 'auto'; }
     else { el.style.right = '10px'; el.style.left = 'auto'; }
 }
 
 function initBubble() {
     const el = $id('ia_bubble');
     let down = null, dragged = false;
-    
+
     el.addEventListener('pointerdown', (e) => {
-        el.setPointerCapture(e.pointerId);
+        try { el.setPointerCapture(e.pointerId); } catch (_) {}
         const r = el.getBoundingClientRect();
-        down = { x: e.clientX, y: e.clientY, left: r.left, top: r.top };
+        down = { x: e.clientX, y: e.clientY, left: r.left, top: r.top, time: now() };
         dragged = false;
     });
-    
+
     el.addEventListener('pointermove', (e) => {
         if (!down) return;
         const dx = e.clientX - down.x, dy = e.clientY - down.y;
-        if (!dragged && Math.hypot(dx, dy) > 10) dragged = true; // Increased threshold for mobile
+        // 18px movement threshold guarantees touch jitter on phones is not registered as drag
+        if (!dragged && Math.hypot(dx, dy) > 18) dragged = true;
         if (!dragged) return;
-        const size = el.offsetWidth;
+
+        const size = el.offsetWidth || 54;
         el.style.left = clamp(down.left + dx, 4, window.innerWidth - size - 4) + 'px';
         el.style.top = clamp(down.top + dy, 4, window.innerHeight - size - 4) + 'px';
         el.style.right = 'auto';
     });
-    
+
     const end = (e) => {
         if (!down) return;
-        el.releasePointerCapture(e.pointerId);
+        try { if (el.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId); } catch (_) {}
+
+        const duration = now() - down.time;
+        const r = el.getBoundingClientRect();
+
         if (dragged) {
-            const r = el.getBoundingClientRect();
-            getSettings().bubblePos = { side: r.left + r.width / 2 < window.innerWidth / 2 ? 'left' : 'right', y: clamp(r.top / window.innerHeight, 0, 0.95) };
-            saveSettings(); positionBubble();
-        } else {
-            // Tap interpreted on pointerup solves mobile click-swallow bugs perfectly
+            const h = window.innerHeight || 800;
+            const yRatio = clamp(r.top / h, 0.05, 0.88);
+            if (Number.isFinite(yRatio)) {
+                getSettings().bubblePos = {
+                    side: r.left + r.width / 2 < window.innerWidth / 2 ? 'left' : 'right',
+                    y: yRatio
+                };
+                saveSettings();
+            }
+            positionBubble();
+        } else if (duration < 650) {
+            // Definite tap: trigger open/close and shield trailing mobile clicks
+            G.shield = now() + 600;
             galleryOpen() ? closeGallery() : openGallery();
         }
+
         down = null;
+        dragged = false;
     };
-    
+
     el.addEventListener('pointerup', end);
-    el.addEventListener('pointercancel', end);
-    el.addEventListener('click', (e) => e.preventDefault()); // Prevent native click ghosting
-    
+    el.addEventListener('pointercancel', (e) => {
+        try { if (el.hasPointerCapture?.(e.pointerId)) el.releasePointerCapture(e.pointerId); } catch (_) {}
+        down = null;
+        dragged = false;
+    });
+    el.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
+
     window.addEventListener('resize', positionBubble);
     window.addEventListener('orientationchange', () => setTimeout(positionBubble, 250));
 }
@@ -168,6 +197,7 @@ function initBubble() {
 // Gallery
 // ---------------------------------------------------------------------------
 export function openGallery() {
+    G.shield = now() + 600; // Suppress trailing mobile taps from closing immediately
     G.select = false; G.sel.clear(); G.q = '';
     $id('g_search').value = ''; $id('g_clear').hidden = true;
     $id('g_searchrow').classList.remove('open');
@@ -180,6 +210,7 @@ export function closeGallery() {
     closeViewer(true);
     $id('ia_gallery').hidden = true;
     hostEl().classList.remove('gallery-open');
+    positionBubble();
 }
 
 function computeList() {
@@ -277,7 +308,10 @@ async function removeRecords(ids) {
 
 function initGalleryEvents() {
     $id('g_close').addEventListener('click', closeGallery);
-    $id('ia_gallery').addEventListener('click', (e) => { if (e.target.id === 'ia_gallery' && now() > G.shield) closeGallery(); });
+    $id('ia_gallery').addEventListener('click', (e) => {
+        // Only close if the backdrop itself was clicked and not during shield time
+        if (e.target.id === 'ia_gallery' && now() > G.shield) closeGallery();
+    });
 
     $id('g_nav').addEventListener('click', (e) => {
         const b = e.target.closest('.chip'); if (!b) return;
@@ -325,14 +359,21 @@ function initGalleryEvents() {
         openViewer(G.list, G.list.findIndex(r => String(r.id) === card.dataset.id));
     });
 
+    // Long-press detection
     let lp = null;
     grid.addEventListener('pointerdown', (e) => {
         const card = e.target.closest('.card');
         if (!card || e.target.closest('[data-act="fav"]')) return;
         clearTimeout(lp);
-        lp = setTimeout(() => { lp = null; G.shield = now() + 450; G.select = true; syncSelectUi(); if (!G.sel.has(card.dataset.id)) toggleSel(card); navigator.vibrate?.(15); }, 550);
+        lp = setTimeout(() => {
+            lp = null; G.shield = now() + 450; G.select = true; syncSelectUi();
+            if (!G.sel.has(card.dataset.id)) toggleSel(card);
+            navigator.vibrate?.(15);
+        }, 550);
     });
-    for (const ev of ['pointerup', 'pointercancel', 'pointerleave', 'scroll']) grid.addEventListener(ev, () => { clearTimeout(lp); lp = null; }, { passive: true });
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave', 'scroll']) {
+        grid.addEventListener(ev, () => { clearTimeout(lp); lp = null; }, { passive: true });
+    }
     grid.addEventListener('contextmenu', (e) => { if (e.target.closest('.card')) e.preventDefault(); });
 }
 

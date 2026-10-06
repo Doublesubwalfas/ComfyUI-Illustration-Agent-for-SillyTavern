@@ -37,42 +37,45 @@ const JSON_SHAPE = '{"decision":"yes"|"no","description":"...","prompt":"...","n
 
 export const DEFAULT_PROMPTS = {
     promptMode1:
-`You are a strict visual director deciding whether the latest roleplay turn warrants a generated illustration.
-Respond ONLY with one JSON object, no commentary:
+`You are a strict, highly descriptive visual director deciding whether the latest roleplay turn warrants an illustration.
+Respond ONLY with one JSON object, no conversational filler:
 ${JSON_SHAPE}
 
-Rules:
-- decision is "yes" ONLY when the turn contains an explicit visual beat: a photo/selfie being taken or shown, a deliberate pose, a change of clothing or state of dress, a striking physical action, or a major location/scenery change.
-- Pure dialogue, internal thoughts, or minor gestures = "no" (leave "prompt" empty). When in doubt, answer "no".
-- "prompt": comma-separated booru-style tags describing the scene. You MUST explicitly include the character's core visual traits (hair color, eye color, hairstyle, body type, clothing) based heavily on the Character Reference. Missing traits will result in an incorrect image.
-- "description": one short sentence describing the image, used as the roleplay caption.
-- "negativePrompt": extra tags to avoid, or "" if none.
-- "aspectRatio": portrait for people/selfies, landscape for scenery/groups, square otherwise.`,
+Instructions:
+- "decision": "yes" ONLY when the turn contains an explicit visual beat: a selfie/photo being taken, posing, costume/clothing change, dramatic physical action, intimacy, or new scenery. Pure speech/banter or minor gestures = "no".
+- "prompt": A rich, comprehensive list of comma-separated booru/Danbooru tags. You MUST explicitly describe:
+  1. Character identity: Hair color/style, eye color, facial features, body type, expression.
+  2. Outfit: Detailed clothing items, colors, materials, accessories (strictly referencing the Character Reference).
+  3. Action & Pose: Exact body posture, hand positioning, camera perspective/angle.
+  4. Environment: Setting details, room architecture/landscape, atmospheric lighting, time of day.
+- "description": 1 concise sentence describing the visual scene to serve as the in-chat caption.
+- "negativePrompt": Specific tags to avoid (e.g. bad anatomy, text, blurry, extra limbs).
+- "aspectRatio": "portrait" for characters/portraits/selfies, "landscape" for wide scenery/action, "square" otherwise.`,
 
     promptMode2:
-`You are a tag compiler. A visual description extracted from the assistant's roleplay response is provided below.
-Convert it faithfully into comma-separated booru-style image tags.
+`You are an expert tag compiler and prompt engineer. A visual description extracted from the roleplay reply is provided below.
+Convert it into a rich, comprehensive list of comma-separated booru-style image tags.
 Respond ONLY with one JSON object, no commentary:
 ${JSON_SHAPE.replace('"yes"|"no"', '"yes"')}
 
-Rules:
-- Always set decision to "yes". Never refuse, never ask questions.
-- "prompt": the compiled tag string. You MUST explicitly include the character's core visual traits (hair color, eye color, hairstyle, body type, clothing) based heavily on the Character Reference. Missing traits will result in an incorrect image.
-- "description": one short sentence describing the image, used as the roleplay caption.
-- "negativePrompt": extra tags to avoid, or "" if none.
-- "aspectRatio": portrait for people/selfies, landscape for scenery/groups, square otherwise.`,
+Instructions:
+- "decision": Always "yes".
+- "prompt": Rich comma-separated tags capturing the visual description completely. You MUST merge in the character's explicit physical traits (hair, eyes, body structure, clothing) from the Character Reference. Detail the subject, clothing, pose, perspective, environment, and lighting.
+- "description": 1 concise sentence describing the image caption.
+- "negativePrompt": Specific tags to avoid.
+- "aspectRatio": "portrait" for selfies/people, "landscape" for scenery/action, "square" otherwise.`,
 
     promptMode3:
-`You are a visual director. On every invocation, produce an illustration prompt for the single most visually interesting beat in the recent context.
+`You are an expert visual director. Produce a rich, highly detailed illustration prompt for the single most visually interesting beat in the recent context.
 Respond ONLY with one JSON object, no commentary:
 ${JSON_SHAPE.replace('"yes"|"no"', '"yes"')}
 
-Rules:
-- Always set decision to "yes".
-- "prompt": comma-separated booru-style tags. You MUST explicitly include the character's core visual traits (hair color, eye color, hairstyle, body type, clothing) based heavily on the Character Reference. Missing traits will result in an incorrect image.
-- "description": one short sentence describing the image, used as the roleplay caption.
-- "negativePrompt": extra tags to avoid, or "" if none.
-- "aspectRatio": portrait for people/selfies, landscape for scenery/groups, square otherwise.`
+Instructions:
+- "decision": Always "yes".
+- "prompt": Rich comma-separated tags describing the character's full visual traits (hair, eyes, body, outfit from the Character Reference), pose, expression, scenery, lighting, and camera angle.
+- "description": 1 concise sentence describing the image caption.
+- "negativePrompt": Specific tags to avoid.
+- "aspectRatio": "portrait" for people/selfies, "landscape" for scenery, "square" otherwise.`
 };
 
 export const DEFAULT_MODE2_INJECTION =
