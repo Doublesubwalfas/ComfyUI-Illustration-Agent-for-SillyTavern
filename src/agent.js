@@ -12,7 +12,6 @@ import { waitForStIdle } from './stb.js';
 
 // ===========================================================================
 //  The agent loop:   SENSE (free, local)  ->  DECIDE (one cheap LLM call)  ->  ACT (queued)
-//  Every stage can bail out early, so most turns cost nothing.
 // ===========================================================================
 
 const AGENT_SYSTEM_PROMPT =
@@ -21,13 +20,13 @@ const AGENT_SYSTEM_PROMPT =
     'Respond ONLY with the requested JSON object.';
 
 const MAX_MSG_CHARS = 700;
-const MAX_CHAR_DESC = 1000;
+const MAX_CHAR_DESC = 3000; // EXPANDED: Ensures the LLM sees the full character physical traits
 const MAX_QUEUE = 3;
 const MODE2_KEY = 'illustration_agent_mode2';
 
-let runToken = 0;          // bumps on every evaluation; stale results are discarded
-let evalAbort = null;      // abort handle of the in-flight LLM decision
-const queue = [];          // generation jobs (GPU work is serialized)
+let runToken = 0;          
+let evalAbort = null;      
+const queue = [];          
 let queueRunning = false;
 let currentJobAbort = null;
 
@@ -82,7 +81,7 @@ async function runQueue() {
 }
 
 // ---------------------------------------------------------------------------
-// Mode 2: really inject the <image> instruction into the chat prompt
+// Mode 2: Inject <image> instruction
 // ---------------------------------------------------------------------------
 export function syncMode2Injection() {
     try {
@@ -134,7 +133,6 @@ export async function queryAgentLLM(prompt, signal = null) {
         if (!svc?.sendRequest) throw new Error('Connection Manager is not available in this SillyTavern.');
         const messages = [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }];
         try {
-            // Chat Completion profiles take the messages as-is; Text Completion profiles need a formatted string.
             const built = typeof svc.constructPrompt === 'function' ? svc.constructPrompt(messages, s.connectionProfile) : messages;
             const res = await withTimeout(svc.sendRequest(
                 s.connectionProfile, built, 450,
@@ -211,7 +209,6 @@ export function intervalDue(chat, idx, interval) {
     return n % Math.max(1, interval || 3) === 0;
 }
 
-// Assistant turns since the last illustrated message (Infinity if none).
 export function turnsSinceIllustration(chat, idx) {
     let d = 1;
     for (let i = idx - 1; i >= 0; i--) {
@@ -279,7 +276,6 @@ function sizeFor(aspect, s) {
 // ENTRY POINTS
 // ---------------------------------------------------------------------------
 
-// Called by index.js for every finished assistant message.
 export async function handleNewMessage(idx) {
     const s = getSettings();
     if (!s.enabled) return;
@@ -287,12 +283,11 @@ export async function handleNewMessage(idx) {
     const msg = chat?.[idx];
     if (!isAssistant(msg)) return;
 
-    const tags = readTags(msg);              // read from RAW text first...
-    if (tags.has) stripTagsInMessage(idx);   // ...then remove tags from the visible message
+    const tags = readTags(msg);              
+    if (tags.has) stripTagsInMessage(idx);   
     await evaluate({ idx, tags, force: false });
 }
 
-// Manual trigger: wand button on a message, or the settings button.
 export async function illustrateMessage(idx = null) {
     const chat = getCtx().chat || [];
     idx = idx ?? lastAssistantIndex();
@@ -313,11 +308,11 @@ async function evaluate({ idx, tags, force }) {
     const sig = contentSig(msg);
 
     if (!force) {
-        if (msg.extra?.ia_sig === sig) return;                                           // already handled this exact text
-        if (mode === 'mode2' && !tags.has) return;                                       // no tag, total silence
+        if (msg.extra?.ia_sig === sig) return;                                           
+        if (mode === 'mode2' && !tags.has) return;                                       
         if (mode === 'mode3' && !intervalDue(chat, idx, s.triggerInterval)) return;
         if (mode === 'mode1') {
-            if (turnsSinceIllustration(chat, idx) < (s.cooldown || 0)) return;           // cooldown
+            if (turnsSinceIllustration(chat, idx) < (s.cooldown || 0)) return;           
             if (s.fastGate !== false) {
                 const prev = chat[idx - 1];
                 const gate = passesGate({
@@ -332,14 +327,12 @@ async function evaluate({ idx, tags, force }) {
         msg.extra.ia_sig = sig;
     }
 
-    // A manual run on a plain message must use an "always yes" prompt.
     const promptMode = force && !tags.has && mode !== 'mode3' ? 'mode3' : mode;
     const schema = { mode1: s.promptMode1, mode2: s.promptMode2, mode3: s.promptMode3 }[promptMode] || s.promptMode3;
     const tagsMode = force && tags.has ? 'forced-tags' : mode;
 
-    // Don't collide with a roleplay reply that SillyTavern is still finishing.
     await waitForStIdle();
-    if (getCtx().chat?.[idx] !== msg) return;                                            // chat changed while waiting
+    if (getCtx().chat?.[idx] !== msg) return;                                            
 
     const myToken = ++runToken;
     const target = snapshotTarget(idx);
@@ -354,17 +347,17 @@ async function evaluate({ idx, tags, force }) {
             result = resultFromTags(tags);
         } else {
             const raw = await queryAgentLLM(buildPrompt({ schema, ctx, chat, idx, msg, tags, mode: tagsMode }), ac.signal);
-            if (myToken !== runToken || getCtx().chatId !== target.chatId) return;       // superseded
+            if (myToken !== runToken || getCtx().chatId !== target.chatId) return;       
             try { result = parseAgentResult(raw); }
             catch (parseErr) {
-                if (!tags.has) throw parseErr;                                           // the tag itself is authoritative
+                if (!tags.has) throw parseErr;                                           
                 console.warn('[Illustration Agent] unparseable LLM output, using tag text directly', parseErr);
                 result = resultFromTags(tags);
             }
         }
     } catch (e) {
         if (e?.name === 'AbortError') return;
-        if (msg.extra) delete msg.extra.ia_sig;                                          // allow a later retry
+        if (msg.extra) delete msg.extra.ia_sig;                                          
         console.error('[Illustration Agent] evaluation failed', e);
         notify('error', 'Evaluation failed: ' + e.message);
         return;
@@ -390,7 +383,7 @@ async function evaluate({ idx, tags, force }) {
     }
 
     msg.extra = msg.extra || {};
-    msg.extra.ia_done = true;                                                            // drives the cooldown
+    msg.extra.ia_done = true;                                                            
     const character = findCharacter(ctx, msg)?.name || msg.name;
 
     enqueue(async (signal) => {
@@ -431,7 +424,6 @@ async function runGeneration({ positive, negative, aspect, description, target, 
     if (pick != null) await deliverRoleplayImage(results[pick].url, description, target);
 }
 
-// Reroll = same prompt, new seed, NO LLM call. Swaps the image in the chat message.
 export async function rerollImage(url, { replaceInChat = true } = {}) {
     const rec = getRecordByUrl(url);
     if (!rec?.positive) { notify('warning', 'This image has no stored prompt, so it cannot be rerolled.'); return; }
@@ -449,5 +441,4 @@ export async function rerollImage(url, { replaceInChat = true } = {}) {
     });
 }
 
-// "Redo" from the gallery viewer: a fresh variation of a stored prompt.
 export async function rerollRecord(rec) { return rerollImage(rec.url, { replaceInChat: false }); }

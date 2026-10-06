@@ -110,9 +110,6 @@ function applyBubbleVisibility() {
     positionBubble();
 }
 
-// ---------------------------------------------------------------------------
-// Bubble (Pointer Events; opens on CLICK so a trailing synthetic click can never tap through)
-// ---------------------------------------------------------------------------
 function positionBubble() {
     const el = $id('ia_bubble');
     const size = el.offsetWidth || 54;
@@ -125,39 +122,44 @@ function positionBubble() {
 
 function initBubble() {
     const el = $id('ia_bubble');
-    let down = null, dragged = false, suppress = false;
+    let down = null, dragged = false;
+    
     el.addEventListener('pointerdown', (e) => {
         el.setPointerCapture(e.pointerId);
         const r = el.getBoundingClientRect();
         down = { x: e.clientX, y: e.clientY, left: r.left, top: r.top };
         dragged = false;
     });
+    
     el.addEventListener('pointermove', (e) => {
         if (!down) return;
         const dx = e.clientX - down.x, dy = e.clientY - down.y;
-        if (!dragged && Math.hypot(dx, dy) > 8) dragged = true;
+        if (!dragged && Math.hypot(dx, dy) > 10) dragged = true; // Increased threshold for mobile
         if (!dragged) return;
         const size = el.offsetWidth;
         el.style.left = clamp(down.left + dx, 4, window.innerWidth - size - 4) + 'px';
         el.style.top = clamp(down.top + dy, 4, window.innerHeight - size - 4) + 'px';
         el.style.right = 'auto';
     });
-    const end = () => {
+    
+    const end = (e) => {
         if (!down) return;
+        el.releasePointerCapture(e.pointerId);
         if (dragged) {
             const r = el.getBoundingClientRect();
             getSettings().bubblePos = { side: r.left + r.width / 2 < window.innerWidth / 2 ? 'left' : 'right', y: clamp(r.top / window.innerHeight, 0, 0.95) };
-            saveSettings(); positionBubble(); suppress = true;
+            saveSettings(); positionBubble();
+        } else {
+            // Tap interpreted on pointerup solves mobile click-swallow bugs perfectly
+            galleryOpen() ? closeGallery() : openGallery();
         }
         down = null;
     };
+    
     el.addEventListener('pointerup', end);
     el.addEventListener('pointercancel', end);
-    el.addEventListener('click', (e) => {
-        e.preventDefault();
-        if (suppress) { suppress = false; return; }
-        galleryOpen() ? closeGallery() : openGallery();
-    });
+    el.addEventListener('click', (e) => e.preventDefault()); // Prevent native click ghosting
+    
     window.addEventListener('resize', positionBubble);
     window.addEventListener('orientationchange', () => setTimeout(positionBubble, 250));
 }
@@ -316,14 +318,13 @@ function initGalleryEvents() {
 
     const grid = $id('g_grid');
     grid.addEventListener('click', (e) => {
-        if (now() < G.shield) return;                              // swallow ghost taps after closing the viewer / long-press
+        if (now() < G.shield) return;                              
         const card = e.target.closest('.card'); if (!card) return;
         if (e.target.closest('[data-act="fav"]')) { toggleFav(card.dataset.id); return; }
         if (G.select) { toggleSel(card); return; }
         openViewer(G.list, G.list.findIndex(r => String(r.id) === card.dataset.id));
     });
 
-    // Long-press a card to start selecting.
     let lp = null;
     grid.addEventListener('pointerdown', (e) => {
         const card = e.target.closest('.card');
@@ -352,7 +353,7 @@ function openViewer(list, index) {
     V.list = list; V.idx = index; V.openedAt = now();
     $id('ia_viewer').classList.remove('nochrome');
     $id('ia_viewer').hidden = false;
-    $id('ia_gallery').inert = true;                       // nothing behind the viewer can receive taps
+    $id('ia_gallery').inert = true;                       
     show();
 }
 

@@ -3,11 +3,22 @@ import { emit } from './bus.js';
 
 const SETTINGS_KEY = 'illustration_agent_settings';
 
-// ---------------------------------------------------------------------------
-// Default ComfyUI API workflow. Macros (%prompt%, %seed%, ...) are substituted
-// at leaf values only; numeric macros become real JSON numbers.
-// ---------------------------------------------------------------------------
+// Standard SDXL/SD1.5 Checkpoint Workflow (Default)
 export const DEFAULT_WORKFLOW = {
+    "3": { class_type: "KSampler", inputs: {
+        seed: "%seed%", steps: "%steps%", cfg: "%cfg%", sampler_name: "%sampler%",
+        scheduler: "%scheduler%", denoise: "%denoise%",
+        model: ["4", 0], positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] } },
+    "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "%model%" } },
+    "5": { class_type: "EmptyLatentImage", inputs: { width: "%width%", height: "%height%", batch_size: 1 } },
+    "6": { class_type: "CLIPTextEncode", inputs: { text: "%prompt%", clip: ["4", 1] } },
+    "7": { class_type: "CLIPTextEncode", inputs: { text: "%negative_prompt%", clip: ["4", 1] } },
+    "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] } },
+    "9": { class_type: "SaveImage", inputs: { filename_prefix: "ia_agent", images: ["8", 0] } }
+};
+
+// GGUF MultiGPU / UnetLoader Workflow (Alternative)
+export const GGUF_WORKFLOW = {
     "3": { class_type: "KSampler", inputs: {
         seed: "%seed%", steps: "%steps%", cfg: "%cfg%", sampler_name: "%sampler%",
         scheduler: "%scheduler%", denoise: "%denoise%",
@@ -33,20 +44,20 @@ ${JSON_SHAPE}
 Rules:
 - decision is "yes" ONLY when the turn contains an explicit visual beat: a photo/selfie being taken or shown, a deliberate pose, a change of clothing or state of dress, a striking physical action, or a major location/scenery change.
 - Pure dialogue, internal thoughts, or minor gestures = "no" (leave "prompt" empty). When in doubt, answer "no".
-- "prompt": comma-separated booru-style tags describing the scene. Always include the character's consistent physical traits (hair, eyes, body, outfit) taken from the Character Reference, plus expression, pose, setting, lighting, and camera angle. No narrative sentences.
+- "prompt": comma-separated booru-style tags describing the scene. You MUST explicitly include the character's core visual traits (hair color, eye color, hairstyle, body type, clothing) based heavily on the Character Reference. Missing traits will result in an incorrect image.
 - "description": one short sentence describing the image, used as the roleplay caption.
 - "negativePrompt": extra tags to avoid, or "" if none.
 - "aspectRatio": portrait for people/selfies, landscape for scenery/groups, square otherwise.`,
 
     promptMode2:
 `You are a tag compiler. A visual description extracted from the assistant's roleplay response is provided below.
-Convert it faithfully into comma-separated booru-style image tags, preserving every visual detail, and merge in the character's consistent physical traits from the Character Reference.
+Convert it faithfully into comma-separated booru-style image tags.
 Respond ONLY with one JSON object, no commentary:
 ${JSON_SHAPE.replace('"yes"|"no"', '"yes"')}
 
 Rules:
 - Always set decision to "yes". Never refuse, never ask questions.
-- "prompt": the compiled tag string. No narrative sentences.
+- "prompt": the compiled tag string. You MUST explicitly include the character's core visual traits (hair color, eye color, hairstyle, body type, clothing) based heavily on the Character Reference. Missing traits will result in an incorrect image.
 - "description": one short sentence describing the image, used as the roleplay caption.
 - "negativePrompt": extra tags to avoid, or "" if none.
 - "aspectRatio": portrait for people/selfies, landscape for scenery/groups, square otherwise.`,
@@ -58,7 +69,7 @@ ${JSON_SHAPE.replace('"yes"|"no"', '"yes"')}
 
 Rules:
 - Always set decision to "yes".
-- "prompt": comma-separated booru-style tags including the character's consistent physical traits from the Character Reference, plus expression, pose, setting, lighting, and camera angle. No narrative sentences.
+- "prompt": comma-separated booru-style tags. You MUST explicitly include the character's core visual traits (hair color, eye color, hairstyle, body type, clothing) based heavily on the Character Reference. Missing traits will result in an incorrect image.
 - "description": one short sentence describing the image, used as the roleplay caption.
 - "negativePrompt": extra tags to avoid, or "" if none.
 - "aspectRatio": portrait for people/selfies, landscape for scenery/groups, square otherwise.`
@@ -70,30 +81,26 @@ export const DEFAULT_MODE2_INJECTION =
 const DEFAULTS = {
     version: 3,
     enabled: true,
-    agentMode: 'mode1',            // mode1 autonomous | mode2 tag-triggered | mode3 interval
-    deliveryMode: 'attached',      // attached | separate
-    imageBackend: 'comfyui',       // comfyui | sd_command
-    comfyTransport: 'server',      // server (via SillyTavern, works on mobile) | direct (browser -> ComfyUI)
+    agentMode: 'mode1',            
+    deliveryMode: 'attached',      
+    imageBackend: 'comfyui',       
+    comfyTransport: 'server',      
 
     lookback: 3,
     includeThinking: false,
     batchCount: 1,
     interactiveReview: false,
-    toasts: 'normal',              // normal | quiet
+    toasts: 'normal',              
 
-    // Mode 1 (sensing)
     fastGate: true,
-    gateSensitivity: 2,            // 1 high | 2 medium | 4 low
+    gateSensitivity: 2,            
     extraCues: '',
-    cooldown: 2,                   // min assistant turns between automatic illustrations
-    // Mode 2
+    cooldown: 2,                   
     mode2Inject: true,
     mode2SkipLLM: false,
     mode2InjectionText: DEFAULT_MODE2_INJECTION,
-    // Mode 3
     triggerInterval: 3,
 
-    // Image generation
     resPortraitW: 832, resPortraitH: 1216,
     resLandscapeW: 1216, resLandscapeH: 832,
     resSquareW: 1024, resSquareH: 1024,
@@ -107,28 +114,30 @@ const DEFAULTS = {
     comfyCfg: 4.5,
     comfySampler: 'euler_ancestral',
     comfyScheduler: 'normal',
-    selectedWorkflowPreset: 'Default KSampler',
-    workflowPresets: { 'Default KSampler': JSON.stringify(DEFAULT_WORKFLOW, null, 2) },
+    
+    selectedWorkflowPreset: 'Default Checkpoint (SDXL/SD1.5)',
+    workflowPresets: { 
+        'Default Checkpoint (SDXL/SD1.5)': JSON.stringify(DEFAULT_WORKFLOW, null, 2),
+        'GGUF MultiGPU (UNET+CLIP+VAE)': JSON.stringify(GGUF_WORKFLOW, null, 2) 
+    },
     activeWorkflowText: JSON.stringify(DEFAULT_WORKFLOW, null, 2),
 
     stylePrefix: 'masterpiece, best quality, aesthetic, highly detailed',
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality',
     ...DEFAULT_PROMPTS,
 
-    // Evaluator LLM
-    llmProvider: 'current',        // current | profile | custom
+    llmProvider: 'current',        
     connectionProfile: '',
     customLlmUrl: 'https://api.openai.com/v1',
     customLlmKey: '',
     customLlmModel: 'gpt-4o-mini',
     llmTimeoutSec: 45,
 
-    // UI / storage
     showBubble: true,
-    uiScale: 100,                  // gallery/viewer size, percent
-    galleryColumns: 'auto',        // auto | 1 | 2 | 3 | 4
-    lockSend: 'all',               // all | eval | off  (turn Send into Stop while the agent works)
-    bubblePos: null,               // { side: 'left'|'right', y: 0..1 }
+    uiScale: 100,                  
+    galleryColumns: 'auto',        
+    lockSend: 'all',               
+    bubblePos: null,               
     thumbnails: true,
     deleteFilesOnRemove: false,
 
@@ -144,7 +153,7 @@ function migrate(s) {
     if (!Array.isArray(s.gallery)) s.gallery = [];
     if (!s.workflowPresets || typeof s.workflowPresets !== 'object') s.workflowPresets = {};
     if (!s.workflowPresets[s.selectedWorkflowPreset]) {
-        s.selectedWorkflowPreset = Object.keys(s.workflowPresets)[0] || 'Default KSampler';
+        s.selectedWorkflowPreset = Object.keys(s.workflowPresets)[0] || 'Default Checkpoint (SDXL/SD1.5)';
         if (!s.workflowPresets[s.selectedWorkflowPreset]) {
             s.workflowPresets[s.selectedWorkflowPreset] = JSON.stringify(DEFAULT_WORKFLOW, null, 2);
         }
@@ -152,7 +161,6 @@ function migrate(s) {
     s.version = 3;
 }
 
-// The settings object IS the one SillyTavern persists (no stale copies).
 export function getSettings() {
     if (store) return store;
     const root = getCtx().extensionSettings;
@@ -181,11 +189,8 @@ export function notify(level, message, title = 'Illustration Agent') {
     } catch (_) { console.log(`[Illustration Agent] ${level}: ${message}`); }
 }
 
-// ---------------------------------------------------------------------------
-// Gallery (records live in extension settings; image FILES live on the ST server)
-// ---------------------------------------------------------------------------
-let byUrl = null;     // urlKey(url)       -> record
-let byLegacy = null;  // urlKey(legacyUrl) -> record (old localhost links after migration)
+let byUrl = null;     
+let byLegacy = null;  
 
 function buildIndex() {
     byUrl = new Map(); byLegacy = new Map();
