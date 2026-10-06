@@ -14,14 +14,13 @@ import { waitForStIdle } from './stb.js';
 //  The agent loop:   SENSE (free, local)  ->  DECIDE (one cheap LLM call)  ->  ACT (queued)
 // ===========================================================================
 
-// Fixed: No longer tells the model to ignore character cards/references
 const AGENT_SYSTEM_PROMPT =
-    'You are an expert visual director and prompt engineer for image generation. ' +
-    'You analyze roleplay context and character visual references to construct rich, highly detailed image generation prompts. ' +
+    'You are an expert anime and visual director generating image generation prompts. ' +
+    'Faithfully extract and preserve all character appearance details (hair color and style, eye color, facial features, body type, clothing, and accessories) from the Character Reference. ' +
     'Respond ONLY with the requested JSON object.';
 
-const MAX_MSG_CHARS = 2500;  // Increased from 700 to prevent chopping the visual action in long replies
-const MAX_CHAR_DESC = 3500;  // Increased from 1000 so the agent reads the full character appearance
+const MAX_MSG_CHARS = 1200;
+const MAX_CHAR_DESC = 3500; // Expanded so full card appearance isn't cut off
 const MAX_QUEUE = 3;
 const MODE2_KEY = 'illustration_agent_mode2';
 
@@ -115,8 +114,7 @@ export async function queryAgentLLM(prompt, signal = null) {
                 body: JSON.stringify({
                     model: s.customLlmModel,
                     messages: [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
-                    temperature: 0.2,
-                    max_tokens: 1000 // Raised from 450 to allow full descriptive tag chains
+                    temperature: 0.2, max_tokens: 900 // Increased token limit for rich prompts
                 })
             });
             if (!resp.ok) throw new Error(`Custom LLM HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
@@ -137,7 +135,7 @@ export async function queryAgentLLM(prompt, signal = null) {
         try {
             const built = typeof svc.constructPrompt === 'function' ? svc.constructPrompt(messages, s.connectionProfile) : messages;
             const res = await withTimeout(svc.sendRequest(
-                s.connectionProfile, built, 1000,
+                s.connectionProfile, built, 900,
                 { stream: false, signal, extractData: true, includePreset: true, includeInstruct: true }
             ), ms, 'Connection profile request');
             const content = typeof res === 'string' ? res : res?.content;
@@ -150,7 +148,7 @@ export async function queryAgentLLM(prompt, signal = null) {
 
     if (typeof ctx.generateRaw === 'function') {
         return await withTimeout(ctx.generateRaw({
-            systemPrompt: AGENT_SYSTEM_PROMPT, prompt, responseLength: 900, trimNames: false
+            systemPrompt: AGENT_SYSTEM_PROMPT, prompt, responseLength: 800, trimNames: false
         }), ms, 'Evaluator');
     }
     return await withTimeout(ctx.generateQuietPrompt(prompt, false, true), ms, 'Evaluator');
@@ -202,7 +200,7 @@ function resultFromTags(tags) {
 }
 
 // ---------------------------------------------------------------------------
-// Sensing helpers (all local, all free)
+// Sensing helpers
 // ---------------------------------------------------------------------------
 const isAssistant = (m) => m && !m.is_user && !m.is_system;
 
@@ -228,15 +226,6 @@ function findCharacter(ctx, msg) {
     return ctx.characterId != null ? chars[ctx.characterId] : null;
 }
 
-function getCharacterCardText(ch) {
-    if (!ch) return '';
-    // Concatenate standard SillyTavern card character description + personality blocks
-    return [
-        ch.data?.description || ch.description || '',
-        ch.data?.personality || ch.personality || ''
-    ].filter(Boolean).join('\n\n');
-}
-
 function compact(m, s) {
     let t = cleanTriggerTags(m.mes || '');
     if (!s.includeThinking) t = stripThinkingTags(t);
@@ -244,24 +233,23 @@ function compact(m, s) {
     return `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${truncate(t, MAX_MSG_CHARS)}`;
 }
 
-function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode, force = false }) {
+function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
     const s = getSettings();
     const look = Math.max(1, parseInt(s.lookback) || 3);
     const recent = chat.slice(Math.max(0, idx - look + 1), idx + 1);
     const ch = findCharacter(ctx, msg);
-    const desc = getCharacterCardText(ch);
+    const descParts = [
+        ch?.data?.description || ch?.description,
+        ch?.data?.personality || ch?.personality
+    ].filter(Boolean);
+    const desc = descParts.join('\n\n');
 
     let tagBlock = '';
     if (tags?.has && (mode === 'mode2' || mode === 'forced-tags')) {
         tagBlock = '\n[VISUAL DESCRIPTION EXTRACTED FROM THE ASSISTANT\'S RESPONSE:]\n';
         if (tags.image) tagBlock += `-> ${tags.image}\n`;
         if (tags.scene) tagBlock += `-> ${tags.scene}\n`;
-        tagBlock += 'CONVERT THIS EXACT DESCRIPTION INTO RICH IMAGE TAGS AND PRESERVE THE CHARACTER REFERENCE TRAITS.\n';
-    }
-
-    let forceNote = '';
-    if (force && mode === 'mode1') {
-        forceNote = '\n[USER DIRECTIVE: The user explicitly invoked illustration for this turn. Set "decision": "yes" and describe the key visual moment with rich details.]\n';
+        tagBlock += 'CONVERT THIS EXACT DESCRIPTION INTO DETAILED BOORU TAGS AND STRICTLY INCLUDE THE CHARACTER TRAITS BELOW.\n';
     }
 
     let last = cleanTriggerTags(msg.mes || '');
@@ -269,10 +257,10 @@ function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode, force = false })
     last = stripImageMarkdown(last);
 
     return `${schema}
-${forceNote}
+
 Character Reference:
 Name: ${ch?.name || msg.name || 'Character'}
-Description & Traits:
+Appearance & Traits:
 ${truncate(desc, MAX_CHAR_DESC)}
 
 Recent Isolated Context:
@@ -344,9 +332,9 @@ async function evaluate({ idx, tags, force }) {
         msg.extra.ia_sig = sig;
     }
 
-    // FIXED: Never swap out mode1's edited schema for mode3 during forced invocation!
-    const schemaKey = { mode1: 'promptMode1', mode2: 'promptMode2', mode3: 'promptMode3' }[mode] || 'promptMode1';
-    const schema = s[schemaKey] || s.promptMode1;
+    // FIXED: Never overwrite the user's custom prompt with promptMode3 on manual illustrations.
+    // Always use the prompt schema that matches the active agent mode.
+    const schema = { mode1: s.promptMode1, mode2: s.promptMode2, mode3: s.promptMode3 }[mode] || s.promptMode1;
     const tagsMode = force && tags.has ? 'forced-tags' : mode;
 
     await waitForStIdle();
@@ -364,8 +352,7 @@ async function evaluate({ idx, tags, force }) {
         if (useTagsOnly) {
             result = resultFromTags(tags);
         } else {
-            const promptText = buildPrompt({ schema, ctx, chat, idx, msg, tags, mode: tagsMode, force });
-            const raw = await queryAgentLLM(promptText, ac.signal);
+            const raw = await queryAgentLLM(buildPrompt({ schema, ctx, chat, idx, msg, tags, mode: tagsMode }), ac.signal);
             if (myToken !== runToken || getCtx().chatId !== target.chatId) return;       
             try { result = parseAgentResult(raw); }
             catch (parseErr) {

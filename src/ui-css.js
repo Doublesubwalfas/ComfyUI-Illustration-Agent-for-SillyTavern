@@ -13,11 +13,12 @@ export const CSS = `
     font-family: var(--mainFontFamily, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
     font-size: calc(15px * var(--s)); line-height: 1.35; color: var(--fg);
 }
+:host(.gallery-open), :host(.viewer-open) { pointer-events: auto; }
 *, *::before, *::after { box-sizing: border-box; }
 [hidden] { display: none !important; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: pointer;
     -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
-input, textarea, select { font: inherit; font-size: max(16px, 1em); /* >=16px stops iOS zoom-on-focus */ color: inherit; width: 100%;
+input, textarea, select { font: inherit; font-size: max(16px, 1em); color: inherit; width: 100%;
     background: rgba(255,255,255,.07); border: 1px solid var(--line); border-radius: 10px; padding: .6em .75em; outline: none; margin: 0; }
 input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 select option { color: #111; }
@@ -31,7 +32,7 @@ label.f > span { opacity: .8; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .muted { opacity: .65; font-size: .88em; }
 
-/* opaque surface (the theme tint is often translucent; layer it over a solid base) */
+/* opaque surface */
 .surface { background-color: #121218; background-image: linear-gradient(var(--tint), var(--tint)); }
 
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: .45em; min-height: 2.9em; padding: 0 1em;
@@ -134,7 +135,7 @@ label.f > span { opacity: .8; }
 /* ---------- Mobile: panel becomes the whole screen ---------- */
 @media (max-width: 700px) {
     .gallery { background: #000; }
-    .panel { position: fixed; inset: 0; width: auto; height: auto; max-width: none; border-radius: 0; border: 0; box-shadow: none; }
+    .panel { position: fixed; inset: 0; width: 100vw; height: 100dvh; max-height: 100dvh; max-width: none; border-radius: 0; border: 0; box-shadow: none; }
     .bar { padding-top: calc(env(safe-area-inset-top, 0px) + .35em); }
     .grid { grid-template-columns: var(--cols, repeat(2, minmax(0, 1fr))); gap: .6em; padding: .6em calc(env(safe-area-inset-right, 0px) + .6em) calc(env(safe-area-inset-bottom, 0px) + .6em) calc(env(safe-area-inset-left, 0px) + .6em); }
     .dlg-overlay { align-items: flex-end; padding: 0; }
