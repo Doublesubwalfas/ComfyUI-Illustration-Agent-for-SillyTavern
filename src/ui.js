@@ -1,5 +1,6 @@
 import {
-    getSettings, saveSettings, DEFAULT_PROMPTS, DEFAULT_MODE2_INJECTION, notify
+    getSettings, saveSettings, DEFAULT_PROMPTS, DEFAULT_MODE2_INJECTION,
+    DEFAULT_AGENT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT_TEMPLATE, notify
 } from './config.js';
 import { getCtx, escapeHtml, clamp } from './util.js';
 import { queryAgentLLM, illustrateMessage, cancelAll, syncMode2Injection } from './agent.js';
@@ -135,10 +136,20 @@ function buildHtml() {
       ${section('fa-file-code', 'Prompts', `
         ${txt('stylePrefix', 'Style prefix')}
         ${txt('defaultNegative', 'Default negative prompt')}
+
+        <label class="ia-field"><span>Agent system prompt (role and character-fidelity rules)</span>
+          <textarea id="ia_sys_prompt" class="text_pole ia-mono" rows="10" spellcheck="false"></textarea></label>
+        <button type="button" id="ia_reset_sys" class="menu_button">Reset system prompt</button>
+
+        <label class="ia-field"><span>User prompt template (uses the placeholders shown below)</span>
+          <textarea id="ia_user_tpl" class="text_pole ia-mono" rows="14" spellcheck="false"></textarea></label>
+        <div id="ia_tpl_badges" class="ia-badges"></div>
+        <button type="button" id="ia_reset_tpl" class="menu_button">Reset user prompt template</button>
+
         <label class="ia-field"><span>Evaluator instructions (edits apply to the current mode)</span>
           <textarea id="ia_schema" class="text_pole ia-mono" rows="10" spellcheck="false"></textarea></label>
         <div id="ia_schema_badges" class="ia-badges"></div>
-        <button type="button" id="ia_reset_schema" class="menu_button">Reset to default</button>
+        <button type="button" id="ia_reset_schema" class="menu_button">Reset evaluator instructions</button>
       `)}
 
       ${section('fa-images', 'Gallery and storage', `
@@ -235,9 +246,9 @@ function refreshProfiles() {
 // ---- prompt editor (per mode) ------------------------------------------------
 const schemaKey = () => ({ mode1: 'promptMode1', mode2: 'promptMode2', mode3: 'promptMode3' }[getSettings().agentMode] || 'promptMode1');
 
-function loadSchema() { 
-    $('#ia_schema').val(getSettings()[schemaKey()]); 
-    updateBadges(); 
+function loadSchema() {
+    $('#ia_schema').val(getSettings()[schemaKey()]);
+    updateBadges();
 }
 
 function badge(label, ok, hint) {
@@ -254,6 +265,26 @@ function updateBadges() {
     try { JSON.parse(wf); } catch { valid = false; }
     const macros = ['%prompt%', '%negative_prompt%', '%seed%', '%steps%', '%cfg%', '%sampler%', '%scheduler%', '%denoise%', '%width%', '%height%', '%model%', '%clip%', '%vae%'];
     $('#ia_wf_badges').html(badge('valid JSON', valid, 'The workflow must parse') + macros.map(m => badge(m, wf.includes(m), 'Workflow macro')).join(''));
+}
+
+// ---- system prompt & user prompt template ------------------------------------
+const TPL_PLACEHOLDERS = [
+    'schema', 'characters', 'userReference',
+    'recentContext', 'tagBlock', 'speaker', 'response'
+];
+
+function loadAgentPrompts() {
+    const s = getSettings();
+    $('#ia_sys_prompt').val(s.agentSystemPrompt || DEFAULT_AGENT_SYSTEM_PROMPT);
+    $('#ia_user_tpl').val(s.userPromptTemplate || DEFAULT_USER_PROMPT_TEMPLATE);
+    updateTplBadges();
+}
+
+function updateTplBadges() {
+    const tpl = $('#ia_user_tpl').val() || '';
+    $('#ia_tpl_badges').html(TPL_PLACEHOLDERS
+        .map(k => badge(`{{${k}}}`, tpl.includes(`{{${k}}}`), 'Template placeholder'))
+        .join(''));
 }
 
 // ---- workflow presets ---------------------------------------------------------
@@ -336,6 +367,7 @@ export function setupUI() {
     try { refreshProfiles(); } catch (e) { console.warn(e); }
     try { refreshVisibility(); } catch (e) { console.warn(e); }
     try { loadSchema(); } catch (e) { console.warn(e); }
+    try { loadAgentPrompts(); } catch (e) { console.warn(e); }
 
     const s = getSettings();
     $('#ia_schema').on('input', function () { s[schemaKey()] = $(this).val(); saveSettings(); updateBadges(); });
@@ -343,6 +375,30 @@ export function setupUI() {
         if (!confirm('Reset the evaluator instructions for the current mode?')) return;
         s[schemaKey()] = DEFAULT_PROMPTS[schemaKey()]; saveSettings(); loadSchema();
     });
+
+    $('#ia_sys_prompt').on('input', function () {
+        s.agentSystemPrompt = $(this).val();
+        saveSettings();
+    });
+    $('#ia_user_tpl').on('input', function () {
+        s.userPromptTemplate = $(this).val();
+        saveSettings();
+        updateTplBadges();
+    });
+    $('#ia_reset_sys').on('click', () => {
+        if (!confirm('Reset the agent system prompt to its default?')) return;
+        s.agentSystemPrompt = DEFAULT_AGENT_SYSTEM_PROMPT;
+        saveSettings();
+        $('#ia_sys_prompt').val(DEFAULT_AGENT_SYSTEM_PROMPT);
+    });
+    $('#ia_reset_tpl').on('click', () => {
+        if (!confirm('Reset the user prompt template to its default?')) return;
+        s.userPromptTemplate = DEFAULT_USER_PROMPT_TEMPLATE;
+        saveSettings();
+        $('#ia_user_tpl').val(DEFAULT_USER_PROMPT_TEMPLATE);
+        updateTplBadges();
+    });
+
     $('#ia_reset_m2').on('click', () => {
         s.mode2InjectionText = DEFAULT_MODE2_INJECTION; saveSettings();
         $('[data-ia="mode2InjectionText"]').val(DEFAULT_MODE2_INJECTION); syncMode2Injection();

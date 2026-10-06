@@ -1,5 +1,8 @@
 import { getCtx, truncate, joinTags, withTimeout, clamp, slashSafe, normalizeUrl } from './util.js';
-import { getSettings, notify, getRecordByUrl } from './config.js';
+import {
+    getSettings, notify, getRecordByUrl,
+    DEFAULT_AGENT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT_TEMPLATE
+} from './config.js';
 import { generateImage, recordExternalImage } from './comfy.js';
 import {
     cleanTriggerTags, stripThinkingTags, stripImageMarkdown, readTags, stripTagsInMessage,
@@ -14,26 +17,14 @@ import { waitForStIdle } from './stb.js';
 //  The agent loop:   SENSE (free, local)  ->  DECIDE (one cheap LLM call)  ->  ACT (queued)
 // ===========================================================================
 
-const AGENT_SYSTEM_PROMPT =
-    'You are an expert anime and visual director generating precise image generation prompts for diffusion models. ' +
-    'Your absolute priority is CHARACTER FIDELITY: preserve every visual trait from the Character Reference verbatim — ' +
-    'hair color, hair style and length, eye color, skin tone, body type, bust/hips, height, distinguishing marks (scars, ' +
-    'tattoos, glasses, heterochromia), and default accessories. Never invent, swap, or paraphrase these traits. ' +
-    'If the Character Reference contains an [VISUAL APPEARANCE] block, treat it as the single source of truth and copy its ' +
-    'wording directly into the prompt. If a visual trait is missing from [VISUAL APPEARANCE] but present in [CHARACTER DESCRIPTION], ' +
-    'infer it from there. Only if a trait is completely absent should you fall back to generic conventions for that character archetype. ' +
-    'Accurately capture the current scene from the latest response (action, pose, expression, current clothing/attire, environment/setting, ' +
-    'lighting, camera angle). If the scene describes an outfit change or specific attire, depict that outfit; otherwise use the Character ' +
-    'Reference outfit. Respond ONLY with the requested JSON object.';
-
 const MAX_MSG_CHARS = 4000;
 const MAX_CHAR_DESC = 6000;
 const MAX_QUEUE = 3;
 const MODE2_KEY = 'illustration_agent_mode2';
 
-let runToken = 0;          
-let evalAbort = null;      
-const queue = [];          
+let runToken = 0;
+let evalAbort = null;
+const queue = [];
 let queueRunning = false;
 let currentJobAbort = null;
 
@@ -108,6 +99,7 @@ export async function queryAgentLLM(prompt, signal = null) {
     const s = getSettings();
     const ctx = getCtx();
     const ms = (s.llmTimeoutSec || 45) * 1000;
+    const sys = (s.agentSystemPrompt && s.agentSystemPrompt.trim()) || DEFAULT_AGENT_SYSTEM_PROMPT;
 
     if (s.llmProvider === 'custom') {
         const url = `${(s.customLlmUrl || '').replace(/\/+$/, '')}/chat/completions`;
@@ -120,7 +112,7 @@ export async function queryAgentLLM(prompt, signal = null) {
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${s.customLlmKey || ''}` },
                 body: JSON.stringify({
                     model: s.customLlmModel,
-                    messages: [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
+                    messages: [{ role: 'system', content: sys }, { role: 'user', content: prompt }],
                     temperature: 0.2, max_tokens: 900
                 })
             });
@@ -138,7 +130,7 @@ export async function queryAgentLLM(prompt, signal = null) {
             try { svc = (await import(new URL('/scripts/extensions/shared.js', location.origin).href)).ConnectionManagerRequestService; } catch (_) {}
         }
         if (!svc?.sendRequest) throw new Error('Connection Manager is not available in this SillyTavern.');
-        const messages = [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }];
+        const messages = [{ role: 'system', content: sys }, { role: 'user', content: prompt }];
         try {
             const built = typeof svc.constructPrompt === 'function' ? svc.constructPrompt(messages, s.connectionProfile) : messages;
             const res = await withTimeout(svc.sendRequest(
@@ -155,7 +147,7 @@ export async function queryAgentLLM(prompt, signal = null) {
 
     if (typeof ctx.generateRaw === 'function') {
         return await withTimeout(ctx.generateRaw({
-            systemPrompt: AGENT_SYSTEM_PROMPT, prompt, responseLength: 800, trimNames: false
+            systemPrompt: sys, prompt, responseLength: 800, trimNames: false
         }), ms, 'Evaluator');
     }
     return await withTimeout(ctx.generateQuietPrompt(prompt, false, true), ms, 'Evaluator');
@@ -251,9 +243,9 @@ function findCharacter(ctx, msg) {
 }
 
 // ---------------------------------------------------------------------------
-// FIX 1: Appearance-aware character extraction.
+// Appearance-aware character extraction.
 // Many modern character cards ship a dedicated "appearance" field (Marinara
-// ecosystem, V2 character cards with a visual sheet, etc). We now look for it
+// ecosystem, V2 character cards with a visual sheet, etc). We look for it
 // under several naming conventions and mark it as the single source of truth.
 // If it is absent we fall back to the description, but we tag the block so the
 // LLM knows it must extract visual traits itself rather than paraphrase.
@@ -283,47 +275,104 @@ function pickAppearance(d, ch) {
     return '';
 }
 
-function extractCharacterDetails(ch) {
-    if (!ch) return '';
-    const d = ch.data || ch;
-    const parts = [];
+// All characters who could plausibly be on-screen right now.
+function findRelevantCharacters(ctx, chat, idx, msg) {
+    const chars = ctx.characters || [];
+    if (!chars.length) return [];
 
-    // 1. Explicit visual appearance block — highest priority for the image LLM.
-    const appearance = pickAppearance(d, ch);
-    if (appearance) {
-        parts.push(`[VISUAL APPEARANCE — single source of truth for character design, copy verbatim]\n${appearance}`);
-    } else {
-        parts.push(
-            '[VISUAL APPEARANCE — no dedicated appearance field was found on this card]\n' +
-            'No explicit appearance data. Extract every visual trait you can find from the Character Description below ' +
-            'and use it verbatim. Do not invent traits that are not implied by the description.'
+    const byKey = new Map();
+    const add = (c) => {
+        if (!c) return;
+        const k = c.avatar || c.data?.avatar || c.name;
+        if (k) byKey.set(k, c);
+    };
+    const byAvatar = (id) => chars.find(x => x.avatar === id || x.data?.avatar === id);
+    const byName = (n) => {
+        const want = String(n || '').trim().toLowerCase();
+        if (!want) return null;
+        return chars.find(x =>
+            (x.name || '').trim().toLowerCase() === want ||
+            (x.data?.name || '').trim().toLowerCase() === want
         );
+    };
+
+    // Active solo character
+    const activeId = ctx.characterId ?? ctx.this_chid;
+    if (activeId != null) add(byAvatar(activeId) || byName(activeId));
+
+    // Active group members
+    const groupId = ctx.groupId ?? ctx.selected_group;
+    const group = (ctx.groups || []).find(g => String(g.id) === String(groupId));
+    const members = ctx.groupMembers || group?.members || [];
+    for (const m of members) {
+        if (typeof m === 'string') add(byAvatar(m) || byName(m));
+        else if (m && typeof m === 'object') add(m.avatar ? (byAvatar(m.avatar) || m) : m);
     }
 
-    // 2. Description (may contain supplemental visual detail).
-    const desc = d.description || ch.description || '';
-    if (desc.trim()) parts.push(`[CHARACTER DESCRIPTION]\n${desc.trim()}`);
+    // Speaker of the current message (always include)
+    if (msg?.name) add(byAvatar(msg.original_avatar) || byName(msg.name));
 
-    // 3. Personality.
-    const personality = d.personality || ch.personality || '';
-    if (personality.trim()) parts.push(`[PERSONALITY & TRAITS — informs expression and posture only, not appearance]\n${personality.trim()}`);
-
-    // 4. Scenario.
-    const scenario = d.scenario || ch.scenario || '';
-    if (scenario.trim()) parts.push(`[SCENARIO & SETTING]\n${scenario.trim()}`);
-
-    // 5. Tags.
-    const tags = Array.isArray(d.tags) ? d.tags.filter(Boolean).join(', ') : (d.tags || ch.tags || '');
-    if (tags.trim()) parts.push(`[VISUAL TAGS]\n${tags.trim()}`);
-
-    // 6. mes_example / first_mes often contain the character's default outfit
-    //    described in prose — useful when appearance and description are thin.
-    if (!appearance) {
-        const first = d.first_mes || ch.first_mes || '';
-        if (first.trim()) parts.push(`[OPENING SCENE (for default outfit / environment cues only)]\n${truncate(first.trim(), 1200)}`);
+    // Anyone explicitly named in the last few messages (probably in the scene)
+    const recent = chat.slice(Math.max(0, idx - 3), idx + 1);
+    const sceneText = recent.map(m => m.mes || '').join('\n').toLowerCase();
+    for (const c of chars) {
+        if (!c.name) continue;
+        const key = c.avatar || c.data?.avatar || c.name;
+        if (byKey.has(key)) continue;
+        const needle = c.name.trim().toLowerCase();
+        if (needle.length < 3) continue;
+        const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(`(?:^|[^\\p{L}])${esc}(?:$|[^\\p{L}])`, 'iu');
+        if (re.test(sceneText)) add(c);
     }
 
-    return parts.join('\n\n');
+    return [...byKey.values()];
+}
+
+// One block per character. Speaker is explicitly flagged so the LLM knows the focus.
+function buildCharactersBlock(characters, speaker) {
+    if (!characters.length) {
+        return '(No character cards are available. Infer characters from the scene description only.)';
+    }
+    const spk = String(speaker || '').trim().toLowerCase();
+    return characters.map(ch => {
+        const d = ch.data || ch;
+        const isSpeaker = spk && (ch.name || '').trim().toLowerCase() === spk;
+        const lines = [`### ${ch.name}${isSpeaker ? '  ← SPEAKING / NARRATING THIS TURN' : ''}`];
+
+        const appearance = pickAppearance(d, ch);
+        if (appearance) {
+            lines.push('[VISUAL APPEARANCE — copy traits verbatim]');
+            lines.push(appearance);
+        } else {
+            lines.push('[VISUAL APPEARANCE — none defined; extract visual traits from DESCRIPTION and VISUAL TAGS below]');
+            // Only when nothing else exists, use first_mes as an outfit hint.
+            const first = (d.first_mes || ch.first_mes || '').trim();
+            if (first) {
+                lines.push('[OPENING SCENE — outfit/environment cues only]');
+                lines.push(truncate(first, 1000));
+            }
+        }
+
+        const desc = (d.description || '').trim();
+        if (desc) {
+            lines.push('[DESCRIPTION]');
+            lines.push(truncate(desc, 2500));
+        }
+
+        const personality = (d.personality || '').trim();
+        if (personality) {
+            lines.push('[PERSONALITY — informs expression/posture only]');
+            lines.push(truncate(personality, 800));
+        }
+
+        const tags = Array.isArray(d.tags) ? d.tags.filter(Boolean).join(', ') : (d.tags || '').trim();
+        if (tags) {
+            lines.push('[VISUAL TAGS]');
+            lines.push(tags);
+        }
+        return lines.join('\n');
+    }).join('\n\n');
 }
 
 function extractUserDetails(ctx) {
@@ -335,7 +384,7 @@ function extractUserDetails(ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// FIX 2: Reasoning-aware message compaction.
+// Reasoning-aware message compaction.
 // Modern reasoning models in SillyTavern store chain-of-thought in
 // message.extra.reasoning (and variants) instead of inline <think>...</think>
 // tags. The old code only stripped inline tags, so the includeThinking toggle
@@ -368,47 +417,45 @@ function compact(m, s, ctx) {
     return `${speaker}: ${truncate(t, cap)}`;
 }
 
+function fillTemplate(tpl, vars) {
+    return String(tpl || '').replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) =>
+        Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k] ?? '') : ''
+    );
+}
+
 function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
     const s = getSettings();
     const look = Math.max(1, parseInt(s.lookback) || 3);
     const recent = chat.slice(Math.max(0, idx - look), idx);
-    const ch = findCharacter(ctx, msg);
-    const charDesc = extractCharacterDetails(ch);
+    const characters = findRelevantCharacters(ctx, chat, idx, msg);
+    const speaker = msg.name || characters[0]?.name || 'Character';
     const userDesc = extractUserDetails(ctx);
 
     let tagBlock = '';
     if (tags?.has && (mode === 'mode2' || mode === 'forced-tags')) {
-        tagBlock = '\n[VISUAL DESCRIPTION EXTRACTED FROM THE ASSISTANT\'S RESPONSE:]\n';
+        tagBlock = '\n[VISUAL DESCRIPTION FROM THE ASSISTANT\'S TAGS:]\n';
         if (tags.image) tagBlock += `-> ${tags.image}\n`;
         if (tags.scene) tagBlock += `-> ${tags.scene}\n`;
-        tagBlock += 'CONVERT THIS EXACT DESCRIPTION INTO DETAILED BOORU TAGS AND STRICTLY INCLUDE THE CHARACTER TRAITS BELOW.\n';
+        tagBlock += 'CONVERT THIS EXACT DESCRIPTION INTO DETAILED BOORU TAGS; INCLUDE THE CHARACTER TRAITS ABOVE.\n';
     }
 
     let last = cleanTriggerTags(msg.mes || '');
     if (!s.includeThinking) last = stripThinkingTags(last);
     last = stripImageMarkdown(last);
 
-    return `${schema}
+    const tpl = (s.userPromptTemplate && s.userPromptTemplate.trim())
+        ? s.userPromptTemplate
+        : DEFAULT_USER_PROMPT_TEMPLATE;
 
-[CHARACTER REFERENCE]
-Primary Character: ${ch?.name || msg.name || 'Character'}
-${truncate(charDesc, MAX_CHAR_DESC)}
-
-FIDELITY RULES (mandatory):
-- Treat the [VISUAL APPEARANCE] block as authoritative. Copy hair color, eye color, hair length/style, body type, skin tone and any distinguishing marks from it word-for-word into the prompt.
-- If a required visual trait is not listed in [VISUAL APPEARANCE], check the [CHARACTER DESCRIPTION] and [VISUAL TAGS] blocks before falling back on generic conventions.
-- Never swap hair color, eye color, or body type for a different value just because the scene mood changed.
-
-[USER REFERENCE]
-${userDesc}
-
-[RECENT CONTEXT (for continuity)]
-${recent.map(m => compact(m, s, ctx)).join('\n\n') || '(Start of conversation)'}
-${tagBlock}
-[CURRENT ASSISTANT RESPONSE TO ILLUSTRATE]
-Character Speaking/Acting: ${ch?.name || msg.name || 'Character'}
-Response:
-${truncate(last, MAX_MSG_CHARS)}`;
+    return fillTemplate(tpl, {
+        schema,
+        characters: buildCharactersBlock(characters, speaker),
+        userReference: userDesc,
+        recentContext: recent.map(m => compact(m, s, ctx)).join('\n\n') || '(Start of conversation)',
+        tagBlock,
+        speaker,
+        response: truncate(last, MAX_MSG_CHARS)
+    });
 }
 
 function sizeFor(aspect, s) {
@@ -428,8 +475,8 @@ export async function handleNewMessage(idx) {
     const msg = chat?.[idx];
     if (!isAssistant(msg)) return;
 
-    const tags = readTags(msg);              
-    if (tags.has) stripTagsInMessage(idx);   
+    const tags = readTags(msg);
+    if (tags.has) stripTagsInMessage(idx);
     await evaluate({ idx, tags, force: false });
 }
 
@@ -453,11 +500,11 @@ async function evaluate({ idx, tags, force }) {
     const sig = contentSig(msg);
 
     if (!force) {
-        if (msg.extra?.ia_sig === sig) return;                                           
-        if (mode === 'mode2' && !tags.has) return;                                       
+        if (msg.extra?.ia_sig === sig) return;
+        if (mode === 'mode2' && !tags.has) return;
         if (mode === 'mode3' && !intervalDue(chat, idx, s.triggerInterval)) return;
         if (mode === 'mode1') {
-            if (turnsSinceIllustration(chat, idx) < (s.cooldown || 0)) return;           
+            if (turnsSinceIllustration(chat, idx) < (s.cooldown || 0)) return;
             if (s.fastGate !== false) {
                 const prev = chat[idx - 1];
                 const gate = passesGate({
@@ -476,7 +523,7 @@ async function evaluate({ idx, tags, force }) {
     const tagsMode = force && tags.has ? 'forced-tags' : mode;
 
     await waitForStIdle();
-    if (getCtx().chat?.[idx] !== msg) return;                                            
+    if (getCtx().chat?.[idx] !== msg) return;
 
     const myToken = ++runToken;
     const target = snapshotTarget(idx);
@@ -493,17 +540,17 @@ async function evaluate({ idx, tags, force }) {
             const fullPrompt = buildPrompt({ schema, ctx, chat, idx, msg, tags, mode: tagsMode });
             console.log('[Illustration Agent Prompt Sent]', fullPrompt);
             const raw = await queryAgentLLM(fullPrompt, ac.signal);
-            if (myToken !== runToken || getCtx().chatId !== target.chatId) return;       
+            if (myToken !== runToken || getCtx().chatId !== target.chatId) return;
             try { result = parseAgentResult(raw); }
             catch (parseErr) {
-                if (!tags.has) throw parseErr;                                           
+                if (!tags.has) throw parseErr;
                 console.warn('[Illustration Agent] unparseable LLM output, using tag text directly', parseErr);
                 result = resultFromTags(tags);
             }
         }
     } catch (e) {
         if (e?.name === 'AbortError') return;
-        if (msg.extra) delete msg.extra.ia_sig;                                          
+        if (msg.extra) delete msg.extra.ia_sig;
         console.error('[Illustration Agent] evaluation failed', e);
         notify('error', 'Evaluation failed: ' + e.message);
         return;
@@ -529,7 +576,7 @@ async function evaluate({ idx, tags, force }) {
     }
 
     msg.extra = msg.extra || {};
-    msg.extra.ia_done = true;                                                            
+    msg.extra.ia_done = true;
     const character = findCharacter(ctx, msg)?.name || msg.name;
 
     enqueue(async (signal) => {

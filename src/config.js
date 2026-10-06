@@ -90,6 +90,48 @@ Rules:
 export const DEFAULT_MODE2_INJECTION =
     '[Illustration Agent: only when a genuinely visual moment happens (a photo or selfie, a pose, an outfit change, a striking action, or a new location), end your reply with ONE tag: <image>concise visual description: subject, pose, outfit, expression, setting, lighting</image>. Never mention the tag in the narration. If nothing visual happens, omit it.]';
 
+// ---------------------------------------------------------------------------
+// The agent's system prompt and user-prompt template are editable settings.
+// The user-prompt template supports {{placeholders}} that get filled in at
+// runtime by agent.js's fillTemplate()/buildPrompt().
+// ---------------------------------------------------------------------------
+export const DEFAULT_AGENT_SYSTEM_PROMPT =
+`You are an expert anime and visual director producing precise image-generation prompts for diffusion models.
+
+CHARACTER FIDELITY IS THE HIGHEST PRIORITY.
+- Multiple characters may be present. Only depict the characters who are EXPLICITLY in the scene (named, speaking, acting, or directly described as physically present).
+- For each depicted character, preserve their visual traits VERBATIM: hair color, hair style and length, eye color, skin tone, body type, bust/hips, height, distinguishing marks (scars, tattoos, glasses, heterochromia), and default accessories. Never swap or paraphrase traits across characters.
+- If a character has a [VISUAL APPEARANCE] block, treat it as the single source of truth and copy its wording into the prompt.
+- If a visual trait is missing there but present in [DESCRIPTION] or [VISUAL TAGS], infer from that. Only fall back to generic conventions if a trait is genuinely absent.
+- Accurately capture the current scene: pose, expression, current clothing/attire, environment, lighting, camera angle. If the scene describes an outfit change, depict that; otherwise use the character's default outfit.
+- When multiple characters are in frame, describe them with distinct tags (e.g. "1girl, 1boy" plus separate hair/eye tags) so traits don't bleed between them.
+- If only one character is on screen, do NOT add others merely because they exist elsewhere in the story.
+Respond ONLY with the requested JSON object.`;
+
+export const DEFAULT_USER_PROMPT_TEMPLATE =
+`{{schema}}
+
+[SCENE CHARACTERS — only depict those actually present]
+{{characters}}
+
+FIDELITY RULES (mandatory):
+- The scene description below determines WHO is on screen. Include a character only if they are named, speaking, acting, or directly described as physically present.
+- For every character you include, copy their hair color, eye color, hair length/style, body type, skin tone and distinguishing marks from their [VISUAL APPEARANCE] block word-for-word.
+- If a trait is missing from [VISUAL APPEARANCE], check [DESCRIPTION] and [VISUAL TAGS] before falling back to generic conventions.
+- Never blend traits between characters (do not give one character another's hair color, eye color, outfit, etc.).
+- Match the current outfit, pose, expression, action, environment, lighting and camera angle from the scene below.
+
+[USER REFERENCE]
+{{userReference}}
+
+[RECENT CONTEXT (for continuity)]
+{{recentContext}}
+{{tagBlock}}
+[CURRENT ASSISTANT RESPONSE TO ILLUSTRATE]
+Speaker: {{speaker}}
+Response:
+{{response}}`;
+
 const DEFAULTS = {
     version: 3,
     enabled: true,
@@ -126,16 +168,18 @@ const DEFAULTS = {
     comfyCfg: 4.5,
     comfySampler: 'euler_ancestral',
     comfyScheduler: 'normal',
-    
+
     selectedWorkflowPreset: 'Default Checkpoint (SDXL/SD1.5)',
-    workflowPresets: { 
+    workflowPresets: {
         'Default Checkpoint (SDXL/SD1.5)': JSON.stringify(DEFAULT_WORKFLOW, null, 2),
-        'GGUF MultiGPU (UNET+CLIP+VAE)': JSON.stringify(GGUF_WORKFLOW, null, 2) 
+        'GGUF MultiGPU (UNET+CLIP+VAE)': JSON.stringify(GGUF_WORKFLOW, null, 2)
     },
     activeWorkflowText: JSON.stringify(DEFAULT_WORKFLOW, null, 2),
 
     stylePrefix: 'masterpiece, best quality, aesthetic, highly detailed',
     defaultNegative: 'lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality',
+    agentSystemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
+    userPromptTemplate: DEFAULT_USER_PROMPT_TEMPLATE,
     ...DEFAULT_PROMPTS,
 
     llmProvider: 'current',
