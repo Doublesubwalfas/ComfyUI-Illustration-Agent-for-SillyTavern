@@ -1,10 +1,127 @@
 const SETTINGS_KEY = 'illustration_agent_settings';
 
-const DEFAULT_COMFY_WORKFLOW = { /* ...unchanged... */ };
+// ---------------------------------------------------------------------------
+// Default ComfyUI API workflow (UNET + CLIP + VAE split loading, KSampler).
+// Macros such as %prompt% / %seed% are substituted at generation time.
+// Numeric macros (%seed%, %steps%, %cfg%, %width%, ...) are injected as real
+// JSON numbers, so ComfyUI type validation passes.
+// ---------------------------------------------------------------------------
+const DEFAULT_COMFY_WORKFLOW = {
+    "3": {
+        "class_type": "KSampler",
+        "inputs": {
+            "seed": "%seed%",
+            "steps": "%steps%",
+            "cfg": "%cfg%",
+            "sampler_name": "%sampler%",
+            "scheduler": "%scheduler%",
+            "denoise": "%denoise%",
+            "model": ["4", 0],
+            "positive": ["6", 0],
+            "negative": ["7", 0],
+            "latent_image": ["5", 0]
+        }
+    },
+    "4": {
+        "class_type": "UNETLoader",
+        "inputs": {
+            "unet_name": "%model%",
+            "weight_dtype": "default"
+        }
+    },
+    "5": {
+        "class_type": "EmptyLatentImage",
+        "inputs": {
+            "width": "%width%",
+            "height": "%height%",
+            "batch_size": 1
+        }
+    },
+    "6": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "text": "%prompt%",
+            "clip": ["10", 0]
+        }
+    },
+    "7": {
+        "class_type": "CLIPTextEncode",
+        "inputs": {
+            "text": "%negative_prompt%",
+            "clip": ["10", 0]
+        }
+    },
+    "8": {
+        "class_type": "VAEDecode",
+        "inputs": {
+            "samples": ["3", 0],
+            "vae": ["11", 0]
+        }
+    },
+    "9": {
+        "class_type": "SaveImage",
+        "inputs": {
+            "filename_prefix": "ia_agent",
+            "images": ["8", 0]
+        }
+    },
+    "10": {
+        "class_type": "CLIPLoader",
+        "inputs": {
+            "clip_name": "%clip%",
+            "type": "stable_diffusion"
+        }
+    },
+    "11": {
+        "class_type": "VAELoader",
+        "inputs": {
+            "vae_name": "%vae%"
+        }
+    }
+};
 
-const DEFAULT_PROMPT_MODE1 = `...`; // unchanged
-const DEFAULT_PROMPT_MODE2 = `...`; // unchanged
-const DEFAULT_PROMPT_MODE3 = `...`; // unchanged
+// ---------------------------------------------------------------------------
+// Default evaluator schemas, one per agent mode. Each must instruct the LLM
+// to answer with a single JSON object containing:
+//   decision, description, prompt, negativePrompt, aspectRatio
+// ---------------------------------------------------------------------------
+const DEFAULT_PROMPT_MODE1 =
+`You are a strict visual director deciding whether the latest roleplay turn warrants a generated illustration.
+Respond ONLY with one JSON object, no commentary:
+{"decision":"yes"|"no","description":"...","prompt":"...","negativePrompt":"...","aspectRatio":"portrait"|"landscape"|"square"}
+
+Rules:
+- decision is "yes" ONLY when the turn contains an explicit visual beat: a photo/selfie being taken or shown, a deliberate pose, a change of clothing or state of dress, a striking physical action, or a major location/scenery change.
+- Pure dialogue, internal thoughts, or minor gestures = "no". When in doubt, answer "no".
+- "prompt": comma-separated booru-style tags describing the scene. Always include the character's consistent physical traits (hair, eyes, body, outfit) taken from the Character Reference, plus expression, pose, setting, lighting, and camera angle. No narrative sentences.
+- "description": one short sentence describing the image, used as the roleplay caption.
+- "negativePrompt": extra tags to avoid, or "" if none.
+- "aspectRatio": portrait for people/selfies, landscape for scenery/groups, square otherwise.`;
+
+const DEFAULT_PROMPT_MODE2 =
+`You are a tag compiler. A visual description extracted from the assistant's roleplay response is provided below.
+Convert it faithfully into comma-separated booru-style image tags, preserving every visual detail, and merge in the character's consistent physical traits from the Character Reference.
+Respond ONLY with one JSON object, no commentary:
+{"decision":"yes","description":"...","prompt":"...","negativePrompt":"...","aspectRatio":"portrait"|"landscape"|"square"}
+
+Rules:
+- Always set decision to "yes". Never refuse, never ask questions.
+- "prompt": the compiled tag string. No narrative sentences.
+- "description": one short sentence describing the image, used as the roleplay caption.
+- "negativePrompt": extra tags to avoid, or "" if none.
+- "aspectRatio": portrait for people/selfies, landscape for scenery/groups, square otherwise.`;
+
+const DEFAULT_PROMPT_MODE3 =
+`You are a visual director. On every invocation, produce an illustration prompt for the single most visually interesting beat in the recent context.
+Respond ONLY with one JSON object, no commentary:
+{"decision":"yes","description":"...","prompt":"...","negativePrompt":"...","aspectRatio":"portrait"|"landscape"|"square"}
+
+Rules:
+- Always set decision to "yes".
+- "prompt": comma-separated booru-style tags including the character's consistent physical traits from the Character Reference, plus expression, pose, setting, lighting, and camera angle. No narrative sentences.
+- "description": one short sentence describing the image, used as the roleplay caption.
+- "negativePrompt": extra tags to avoid, or "" if none.
+- "aspectRatio": portrait for people/selfies, landscape for scenery/groups, square otherwise.`;
 
 const defaultSettings = {
     enabled: true,
@@ -18,6 +135,10 @@ const defaultSettings = {
     interactiveReview: false,
     pipelinePhase: 'post',
 
+    // Fast pre-filter: in Mode 1, skip the LLM evaluation entirely when the
+    // recent turns contain no visual/photography cues.
+    fastGate: true,
+
     resPortraitW: 832,
     resPortraitH: 1216,
     resLandscapeW: 1216,
@@ -26,7 +147,7 @@ const defaultSettings = {
     resSquareH: 1024,
 
     comfyUrl: 'http://127.0.0.1:8188',
-    comfyRewriteHost: false, // NEW: opt-in host rewrite
+    comfyRewriteHost: false, // opt-in host rewrite
     comfyModel: 'anima-turbo-v1.1.safetensors',
     comfyClip: 'Qwen3-0.6B-heretic-abliterated-uncensored.i1-Q6_K.gguf',
     comfyVae: 'qwen_image_vae.safetensors',
@@ -117,8 +238,8 @@ export function saveGalleryRecord(record) {
 export function deleteGalleryRecords(ids) {
     const s = getSettings();
     if (!Array.isArray(s.gallery)) return;
-    const set = new Set(ids);
-    s.gallery = s.gallery.filter(item => !set.has(item.id));
+    const set = new Set(ids.map(String));
+    s.gallery = s.gallery.filter(item => !set.has(String(item.id)));
     saveSettings();
 
     const count = s.gallery.length;

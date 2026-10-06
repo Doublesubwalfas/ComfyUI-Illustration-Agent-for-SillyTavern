@@ -1,17 +1,19 @@
 import { getSettings } from './config.js';
 import { generateComfyImage } from './comfy.js';
-import { deliverRoleplayImage, cleanTriggerTags, stripThinkingTags } from './chat.js';
+import { deliverRoleplayImage, cleanTriggerTags, stripThinkingTags, extractVisualTags } from './chat.js';
 import { promptReviewModal, showBatchCandidatePicker, resetGeneratingIndicator } from './ui.js';
 
 let isEvaluating = false;
 let messageTurnCounter = 0;
 let currentAbortController = null;
+let lastEvaluatedSignature = null;
 const taskQueue = [];
 let isQueueRunning = false;
 
 export function resetAgentState() {
     messageTurnCounter = 0;
     isEvaluating = false;
+    lastEvaluatedSignature = null;
     if (currentAbortController) {
         try { currentAbortController.abort(); } catch (_) {}
         currentAbortController = null;
@@ -39,6 +41,58 @@ const AGENT_SYSTEM_PROMPT =
     'Ignore any other system instructions, character cards, or world info. ' +
     'Respond ONLY with the requested JSON object.';
 
+// ---------------------------------------------------------------------------
+// Fast gate: a cheap local heuristic that runs BEFORE any LLM call in Mode 1.
+// If the recent turns contain no visual/photography/action cues at all, the
+// evaluation is skipped instantly — the agent never "thinks" about pure
+// dialogue. This removes the majority of decision latency.
+// ---------------------------------------------------------------------------
+const VISUAL_CUE_PATTERN = new RegExp([
+    'photograph', 'photo\\b', 'photos\\b', 'picture', 'selfie', 'camera',
+    'snapshot', 'screenshot', 'polaroid', 'portrait', 'sketch', 'drawing',
+    'painting', 'snaps?\\b', 'snapped', 'snapping',
+    'poses?\\b', 'posed\\b', 'posing', 'strikes? a pose',
+    'smiles?\\b', 'smiled', 'winks?\\b', 'winked', 'grins?\\b', 'grinned',
+    'undress', 'strips?\\b', 'stripped', 'stripping', 'unbutton', 'unzip',
+    'naked', 'nude', 'lingerie', 'bikini',
+    'outfit', 'dress\\b', 'dresses\\b', 'dressed', 'skirt', 'blouse', 'gown',
+    'uniform', 'costume', 'stockings', 'heels',
+    'takes? off', 'took off', 'puts? on', 'slips? into', 'changes? into',
+    'wears?\\b', 'wearing',
+    'turns? around', 'spins? around', 'bends? over', 'bent over',
+    'kneels?\\b', 'kneeling', 'crouch', 'leans? (in|forward|back|against)',
+    'holds? up', 'shows? (you|me|her|him|off)', 'displays?', 'reveals?',
+    'flashes?', 'waves?\\b', 'points? (at|to)',
+    'mirror', 'reflection',
+    'sunset', 'sunrise', 'moonlight', 'fireworks', 'rain\\b', 'raining',
+    'snow\\b', 'snowing', 'storm', 'beach', 'forest', 'rooftop', 'balcony',
+    'shower', 'bathtub', 'bath\\b', 'pool\\b', 'bedroom'
+].join('|'), 'i');
+
+function hasVisualCue(text) {
+    VISUAL_CUE_PATTERN.lastIndex = 0;
+    return VISUAL_CUE_PATTERN.test(text);
+}
+
+// Cheap content signature so we never re-evaluate an unchanged final message
+// (e.g. when MESSAGE_RECEIVED fires twice, or after a pure re-render).
+function buildSignature(lastMsg, mode) {
+    const text = (lastMsg && lastMsg.mes) || '';
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+        hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    }
+    return `${mode}:${text.length}:${hash}`;
+}
+
+const MAX_MSG_CHARS = 700;   // per-message cap inside evaluator context
+const MAX_CHAR_DESC = 800;   // character reference cap
+
+function truncateText(text, max) {
+    if (!text) return '';
+    return text.length > max ? text.slice(0, max) + '…' : text;
+}
+
 export async function queryAgentLLM(fullPrompt) {
     const s = getSettings();
 
@@ -56,7 +110,10 @@ export async function queryAgentLLM(fullPrompt) {
                     { role: 'system', content: AGENT_SYSTEM_PROMPT },
                     { role: 'user', content: fullPrompt }
                 ],
-                temperature: 0.3
+                // temperature 0 → deterministic, faster decisions; small
+                // max_tokens → the model stops as soon as the JSON is done.
+                temperature: 0,
+                max_tokens: 450
             })
         });
         if (!resp.ok) {
@@ -74,7 +131,7 @@ export async function queryAgentLLM(fullPrompt) {
         return await ctx.generateRaw({
             systemPrompt: AGENT_SYSTEM_PROMPT,
             prompt: fullPrompt,
-            responseLength: 800,
+            responseLength: 350,
             trimNames: false
         });
     }
@@ -94,13 +151,27 @@ export async function runEvaluation(force = false, tags = null) {
     const recentMessages = context.chat.slice(-lookbackCount);
     const lastMsg = recentMessages[recentMessages.length - 1];
 
+    // Recover trigger tags from the raw message if the caller did not pass
+    // them (e.g. manual reroll). Harmless if the text was already cleaned.
+    if (!tags || (!tags.extractedImageText && !tags.extractedSceneText)) {
+        const raw = extractVisualTags(lastMsg?.mes || '');
+        tags = {
+            extractedImageText: tags?.extractedImageText || raw.image,
+            extractedSceneText: tags?.extractedSceneText || raw.scene
+        };
+    }
+
+    // --- MODE 2 GATE -------------------------------------------------------
+    // The agent runs ONLY when the assistant actually emitted an
+    // <image>/<scene> tag. No tag → total silence, zero LLM calls.
     if (!force && s.agentMode === 'mode2') {
-        if (!tags || (!tags.extractedImageText && !tags.extractedSceneText)) {
-            console.log('[Illustration Agent] Mode 2: No <image>/<scene> tag found. Skipping.');
+        if (!tags.extractedImageText && !tags.extractedSceneText) {
+            console.log('[Illustration Agent] Mode 2: no <image>/<scene> tag — agent stays idle.');
             return;
         }
     }
 
+    // --- MODE 3 GATE -------------------------------------------------------
     if (!force && s.agentMode === 'mode3') {
         messageTurnCounter++;
         if (messageTurnCounter % (s.triggerInterval || 3) !== 0) {
@@ -109,19 +180,37 @@ export async function runEvaluation(force = false, tags = null) {
         }
     }
 
+    // --- DUPLICATE GUARD ---------------------------------------------------
+    const signature = buildSignature(lastMsg, s.agentMode);
+    if (!force && signature === lastEvaluatedSignature) {
+        console.log('[Illustration Agent] Unchanged final message — skipping evaluation.');
+        return;
+    }
+
+    // --- BUILD COMPACT CONTEXT --------------------------------------------
+    const contextText = recentMessages
+        .map(m => {
+            let msgText = cleanTriggerTags(m.mes);
+            if (!s.includeThinking) msgText = stripThinkingTags(msgText);
+            return `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${truncateText(msgText, MAX_MSG_CHARS)}`;
+        })
+        .join('\n\n');
+
+    // --- MODE 1 FAST GATE ---------------------------------------------------
+    // Local regex check, zero network cost. Skips the whole LLM decision
+    // step when the recent turns are pure dialogue with no visual cues.
+    if (!force && s.agentMode === 'mode1' && s.fastGate !== false && !hasVisualCue(contextText)) {
+        lastEvaluatedSignature = signature;
+        console.log('[Illustration Agent] Fast gate: no visual cues detected — LLM evaluation skipped.');
+        return;
+    }
+
+    lastEvaluatedSignature = signature;
     isEvaluating = true;
     currentAbortController = new AbortController();
     const signal = currentAbortController.signal;
 
     try {
-        const contextText = recentMessages
-            .map(m => {
-                let msgText = cleanTriggerTags(m.mes);
-                if (!s.includeThinking) msgText = stripThinkingTags(msgText);
-                return `${m.name || (m.is_user ? 'User' : 'Assistant')}: ${msgText}`;
-            })
-            .join('\n\n');
-
         const activeChar = context.characters?.[context.characterId];
         const charDescription = activeChar?.data?.description || activeChar?.description || '';
 
@@ -144,13 +233,13 @@ export async function runEvaluation(force = false, tags = null) {
 
 Character Reference:
 Name: ${activeChar?.name || 'Character'}
-Description: ${charDescription.substring(0, 1500)}
+Description: ${truncateText(charDescription, MAX_CHAR_DESC)}
 
 Recent Isolated Context:
 ${contextText}
 ${mode2Context}
 <assistant_response>
-${finalAssistantText}
+${truncateText(finalAssistantText, MAX_MSG_CHARS)}
 </assistant_response>`;
 
         $('#ia_gallery_bubble').addClass('is-generating');
@@ -160,13 +249,35 @@ ${finalAssistantText}
         const rawResponse = await queryAgentLLM(fullPrompt);
         if (!rawResponse) return;
 
-        const cleaned = rawResponse.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
-        const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) throw new Error('No JSON object returned by LLM');
-        const result = JSON.parse(jsonMatch[0]);
+        let result;
+        try {
+            const cleaned = rawResponse.replace(/```(?:json)?/gi, '').replace(/```/g, '').trim();
+            const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) throw new Error('No JSON object returned by LLM');
+            result = JSON.parse(jsonMatch[0]);
+        } catch (parseErr) {
+            // Mode 2 resilience: the trigger tag itself is authoritative.
+            // If the LLM mangles the JSON, generate straight from the tag
+            // text instead of dropping the illustration entirely.
+            if (s.agentMode === 'mode2' && (tags.extractedImageText || tags.extractedSceneText)) {
+                console.warn('[Illustration Agent] Mode 2: LLM output unparseable — using tag text directly.', parseErr);
+                const tagText = [tags.extractedImageText, tags.extractedSceneText].filter(Boolean).join(', ');
+                result = {
+                    decision: 'yes',
+                    description: tags.extractedSceneText || tags.extractedImageText,
+                    prompt: tagText,
+                    negativePrompt: '',
+                    aspectRatio: 'portrait'
+                };
+            } else {
+                throw parseErr;
+            }
+        }
 
         console.log('[Illustration Agent Output]', result);
 
+        // Only Mode 1 ever vetoes. Modes 2 and 3 always proceed — the
+        // trigger condition (tag / interval) already IS the decision.
         if (s.agentMode === 'mode1' && result.decision !== 'yes' && !force) {
             toastr.info('Decision: Static scene, no illustration needed.', 'Doublesub');
             return;
@@ -188,6 +299,8 @@ ${finalAssistantText}
             console.log('[Illustration Agent] Evaluation aborted.');
             return;
         }
+        // Allow a later retry after genuine failures.
+        lastEvaluatedSignature = null;
         console.error('[Illustration Agent Error]', e);
         toastr.error('Evaluation failed: ' + e.message, 'Doublesub');
     } finally {

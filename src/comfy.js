@@ -35,6 +35,8 @@ async function uploadToSillyTavernServer(imgBlob, filename) {
 }
 
 // Macro substitution at leaf values only (never inside key names or JSON syntax).
+// Numeric macros are injected as REAL JSON numbers (not quoted strings) so
+// ComfyUI's server-side type validation accepts them.
 function substituteWorkflow(rawText, params) {
     let parsed;
     try {
@@ -47,21 +49,21 @@ function substituteWorkflow(rawText, params) {
     }
 
     const subs = {
-        '%prompt%': params.positive,
-        '%positive%': params.positive,
-        '%negative_prompt%': params.negative,
-        '%negative%': params.negative,
-        '%sampler%': params.sampler,
-        '%scheduler%': params.scheduler,
-        '%model%': params.model,
-        '%clip%': params.clip,
-        '%vae%': params.vae,
-        '%seed%': params.seed,
-        '%steps%': params.steps,
-        '%cfg%': params.cfg,
-        '%denoise%': params.denoise,
-        '%width%': params.width,
-        '%height%': params.height
+        '%prompt%': String(params.positive ?? ''),
+        '%positive%': String(params.positive ?? ''),
+        '%negative_prompt%': String(params.negative ?? ''),
+        '%negative%': String(params.negative ?? ''),
+        '%sampler%': String(params.sampler ?? ''),
+        '%scheduler%': String(params.scheduler ?? ''),
+        '%model%': String(params.model ?? ''),
+        '%clip%': String(params.clip ?? ''),
+        '%vae%': String(params.vae ?? ''),
+        '%seed%': Number(params.seed),
+        '%steps%': Number(params.steps),
+        '%cfg%': Number(params.cfg),
+        '%denoise%': Number(params.denoise),
+        '%width%': Number(params.width),
+        '%height%': Number(params.height)
     };
 
     function walk(node) {
@@ -72,10 +74,12 @@ function substituteWorkflow(rawText, params) {
             return out;
         }
         if (typeof node === 'string') {
+            // Exact macro leaf: preserve the native type (number stays number).
             if (Object.prototype.hasOwnProperty.call(subs, node)) return subs[node];
+            // Embedded macro inside a larger string: stringify the value.
             let result = node;
             for (const macro in subs) {
-                if (result.includes(macro)) result = result.split(macro).join(subs[macro]);
+                if (result.includes(macro)) result = result.split(macro).join(String(subs[macro]));
             }
             return result;
         }

@@ -10,6 +10,18 @@ export function stripThinkingTags(text) {
     return text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
+// Extracts <image>/<scene> trigger tags from RAW text.
+// MUST be called before cleanTriggerTags(), which strips them.
+export function extractVisualTags(text) {
+    const out = { image: null, scene: null };
+    if (!text || typeof text !== 'string') return out;
+    const imageMatch = /<image>([\s\S]*?)<\/image>/i.exec(text);
+    const sceneMatch = /<scene>([\s\S]*?)<\/scene>/i.exec(text);
+    if (imageMatch && imageMatch[1].trim()) out.image = imageMatch[1].trim();
+    if (sceneMatch && sceneMatch[1].trim()) out.scene = sceneMatch[1].trim();
+    return out;
+}
+
 export async function persistChat() {
     const context = SillyTavern.getContext();
     try {

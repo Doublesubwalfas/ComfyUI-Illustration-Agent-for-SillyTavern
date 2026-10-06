@@ -1,6 +1,6 @@
 import { setupUI } from './src/ui.js';
 import { runEvaluation, resetAgentState } from './src/agent.js';
-import { attachInChatMessageButtons, cleanTriggerTags } from './src/chat.js';
+import { attachInChatMessageButtons, cleanTriggerTags, extractVisualTags } from './src/chat.js';
 import { getSettings } from './src/config.js';
 
 let lastHandledMessageId = null;
@@ -60,15 +60,26 @@ jQuery(async () => {
         lastHandledMessageId = msgId;
         lastHandledSwipeId = swipeId;
 
+        // CRITICAL: extract trigger tags from the RAW message text BEFORE any
+        // cleaning. cleanTriggerTags() strips <image>/<scene> entirely, so
+        // running the extraction after cleaning always produced null — which
+        // is why Mode 2 never fired and scene illustrations never appeared.
         let extractedImageText = null;
         let extractedSceneText = null;
 
         if (msg.mes) {
-            const cleanedText = cleanTriggerTags(msg.mes);
-            const imageMatch = /<image>([\s\S]*?)<\/image>/i.exec(cleanedText);
-            const sceneMatch = /<scene>([\s\S]*?)<\/scene>/i.exec(cleanedText);
-            if (imageMatch) extractedImageText = imageMatch[1].trim();
-            if (sceneMatch) extractedSceneText = sceneMatch[1].trim();
+            const tags = extractVisualTags(msg.mes);
+            extractedImageText = tags.image;
+            extractedSceneText = tags.scene;
+        }
+
+        // Fallback: the active swipe may carry the tags even if mes does not.
+        if (!extractedImageText && !extractedSceneText &&
+            Array.isArray(msg.swipes) && msg.swipes.length > 0) {
+            const sIdx = msg.swipe_id ?? (msg.swipes.length - 1);
+            const tags = extractVisualTags(msg.swipes[sIdx] || '');
+            extractedImageText = tags.image;
+            extractedSceneText = tags.scene;
         }
 
         handleUIRender(msgId);

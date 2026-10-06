@@ -13,8 +13,23 @@ export const galleryState = {
     selectionMode: false,
     selectedIds: new Set(),
     lastFilterChar: null,
-    lastFilterType: null
+    lastFilterType: null,
+    searchQuery: ''
 };
+
+// Double-tap guard for touch devices: ignores a second tap on gallery cards
+// within this window, preventing accidental double lightbox opens.
+const DOUBLE_TAP_GUARD_MS = 400;
+let lastGalleryTapAt = 0;
+
+function escapeHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
 export function resetGeneratingIndicator() {
     $('#ia_gallery_bubble').removeClass('is-generating');
@@ -152,6 +167,13 @@ export function setupUI() {
                             <option value="mode3">Mode 3: Interval-Forced (Triggers every X messages blindly)</option>
                         </select>
                         <small id="ia_mode_hint" style="opacity: 0.7; margin-top: 2px;"></small>
+                    </div>
+
+                    <div class="ia-row-inline" id="ia_fast_gate_row">
+                        <label class="checkbox_label" title="Mode 1 only: instantly skips the LLM evaluation when the recent messages contain no visual or photography cues. Massively reduces decision latency on pure-dialogue turns.">
+                            <input type="checkbox" id="ia_fast_gate">
+                            <span>Fast Pre-Filter (skip LLM when no visual cues — recommended)</span>
+                        </label>
                     </div>
 
                     <div class="ia-row" id="ia_mode2_instructions" style="display: none; margin-top: 8px; border-left: 2px solid #2ecc71; padding-left: 8px;">
@@ -391,6 +413,11 @@ export function setupUI() {
         <div id="ia_gallery_modal" style="display: none;">
             <div class="ia-gallery-header">
                 <b><i class="fa-solid fa-images" style="color: #ff7675; margin-right: 6px;"></i>Illustration Gallery</b>
+                <div class="ia-gallery-search-wrap">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <input type="text" id="ia_gallery_search" placeholder="Search name or description..." autocomplete="off" />
+                    <button type="button" id="ia_gallery_search_clear" title="Clear search"><i class="fa-solid fa-xmark"></i></button>
+                </div>
                 <div class="ia-gallery-controls">
                     <button type="button" id="ia_win_select_btn" class="ia-win-btn" title="Select Images"><i class="fa-solid fa-check-square"></i> Select</button>
                     <button type="button" id="ia_win_delete_btn" class="ia-win-btn" style="display:none; color:#e74c3c;" title="Delete Selected"><i class="fa-solid fa-trash"></i> Delete Selected</button>
@@ -403,6 +430,8 @@ export function setupUI() {
                 <div id="ia_gallery_content" class="ia-gallery-grid"></div>
             </div>
         </div>
+
+        <div id="ia_lightbox_backdrop" style="display: none;"></div>
 
         <div id="ia_lightbox_modal" style="display: none;">
             <div class="ia-lightbox-header">
@@ -437,7 +466,7 @@ function updateModeHint(mode) {
     const s = getSettings();
     const hints = {
         mode1: 'Strict Photography Mode: Triggers ONLY when taking selfies, snapping photos, or showing pictures.',
-        mode2: 'Trigger-word driven: fires ONLY if <image> or <scene> XML tags are present in the response.',
+        mode2: 'Trigger-word driven: fires ONLY when <image>/<scene> tags appear in the response — no decision step, tags convert straight into prompts.',
         mode3: 'Bypasses the thinking step: unconditionally generates image prompts every X assistant messages.'
     };
     $('#ia_mode_hint').text(hints[mode] || '');
@@ -445,14 +474,17 @@ function updateModeHint(mode) {
     if (mode === 'mode1') {
         $('#ia_mode2_instructions').slideUp(150);
         $('#ia_interval_row').slideUp(150);
+        $('#ia_fast_gate_row').slideDown(150);
         $('#ia_schema_editor').val(s.promptMode1);
     } else if (mode === 'mode2') {
         $('#ia_mode2_instructions').slideDown(150);
         $('#ia_interval_row').slideUp(150);
+        $('#ia_fast_gate_row').slideUp(150);
         $('#ia_schema_editor').val(s.promptMode2);
     } else if (mode === 'mode3') {
         $('#ia_mode2_instructions').slideUp(150);
         $('#ia_interval_row').slideDown(150);
+        $('#ia_fast_gate_row').slideUp(150);
         $('#ia_schema_editor').val(s.promptMode3);
     }
     updateMacroBadges();
@@ -492,6 +524,11 @@ function bindSettingsEvents() {
         saveSettings();
     });
     updateModeHint(s.agentMode || 'mode1');
+
+    $('#ia_fast_gate').prop('checked', s.fastGate !== false).on('change', function () {
+        s.fastGate = $(this).is(':checked');
+        saveSettings();
+    });
 
     $('#ia_mode2_injection').val(s.mode2InjectionText).on('input', function() { s.mode2InjectionText = $(this).val(); saveSettings(); });
     $('#ia_delivery_mode').val(s.deliveryMode || 'attached').on('change', function () { s.deliveryMode = $(this).val(); saveSettings(); });
@@ -533,7 +570,6 @@ function bindSettingsEvents() {
     $('#ia_comfy_scheduler').val(s.comfyScheduler).on('input', function () { s.comfyScheduler = $(this).val(); saveSettings(); });
     $('#ia_comfy_url').val(s.comfyUrl).on('input', function () { s.comfyUrl = $(this).val(); saveSettings(); });
 
-    // NEW: bind the auto-rewrite checkbox
     $('#ia_comfy_rewrite_host')
         .prop('checked', !!s.comfyRewriteHost)
         .on('change', function () { s.comfyRewriteHost = $(this).is(':checked'); saveSettings(); });
@@ -556,7 +592,22 @@ function bindSettingsEvents() {
     $('#ia_win_close_btn').on('click', () => { $('#ia_gallery_modal').fadeOut(150); });
     $('#ia_close_review, #ia_rev_cancel').on('click', () => $('#ia_review_modal').fadeOut(150));
     $('#ia_close_batch_picker').on('click', () => $('#ia_batch_picker_modal').fadeOut(150));
-    $('#ia_close_lightbox').on('click', () => $('#ia_lightbox_modal').fadeOut(150));
+    $('#ia_close_lightbox').on('click', closeLightbox);
+    $('#ia_lightbox_backdrop').on('click', closeLightbox);
+
+    // --- Gallery search (character name + description) ---------------------
+    $('#ia_gallery_search').on('input', function () {
+        galleryState.searchQuery = $(this).val();
+        $('#ia_gallery_search_clear').toggle(!!galleryState.searchQuery.trim());
+        renderGalleryContent(galleryState.lastFilterChar, galleryState.lastFilterType);
+    });
+    $('#ia_gallery_search_clear').on('click', function () {
+        $('#ia_gallery_search').val('');
+        galleryState.searchQuery = '';
+        $(this).hide();
+        renderGalleryContent(galleryState.lastFilterChar, galleryState.lastFilterType);
+        $('#ia_gallery_search').trigger('focus');
+    });
 
     $('#ia_ping_llm_btn').on('click', async () => {
         toastr.info('Pinging LLM...', 'Diagnostics');
@@ -725,6 +776,9 @@ function openGallery() {
     $('#ia_gallery_bubble').fadeOut(150);
     galleryState.selectionMode = false;
     galleryState.selectedIds.clear();
+    galleryState.searchQuery = '';
+    $('#ia_gallery_search').val('');
+    $('#ia_gallery_search_clear').hide();
     $('#ia_win_select_btn').html('<i class="fa-solid fa-check-square"></i> Select');
     $('#ia_win_delete_btn').hide();
 
@@ -734,18 +788,19 @@ function openGallery() {
 }
 
 function toggleSelection(id) {
-    if (galleryState.selectedIds.has(id)) {
-        galleryState.selectedIds.delete(id);
-        $(`.ia-card[data-id="${id}"]`).removeClass('ia-selected');
+    const key = String(id);
+    if (galleryState.selectedIds.has(key)) {
+        galleryState.selectedIds.delete(key);
+        $(`.ia-card[data-id="${key}"]`).removeClass('ia-selected');
     } else {
-        galleryState.selectedIds.add(id);
-        $(`.ia-card[data-id="${id}"]`).addClass('ia-selected');
+        galleryState.selectedIds.add(key);
+        $(`.ia-card[data-id="${key}"]`).addClass('ia-selected');
     }
 }
 
 function toggleFavorite(id) {
     const s = getSettings();
-    const item = s.gallery.find(r => r.id === id);
+    const item = s.gallery.find(r => String(r.id) === String(id));
     if (item) {
         item.favorite = !item.favorite;
         saveSettings();
@@ -770,6 +825,11 @@ async function downloadImageLocal(url, filename) {
     }
 }
 
+function closeLightbox() {
+    $('#ia_lightbox_modal').fadeOut(150);
+    $('#ia_lightbox_backdrop').fadeOut(150);
+}
+
 function openLightbox(record) {
     const displayUrl = record.url || record.cleanUrl;
 
@@ -790,11 +850,12 @@ function openLightbox(record) {
     });
 
     $('#ia_lb_show_btn').off('click').on('click', async () => {
-        $('#ia_lightbox_modal').fadeOut(150);
+        closeLightbox();
         $('#ia_gallery_modal').fadeOut(150);
         await showImageToCharacter(record.url, record.description);
     });
 
+    $('#ia_lightbox_backdrop').fadeIn(150);
     $('#ia_lightbox_modal').fadeIn(200);
 }
 
@@ -815,7 +876,7 @@ function renderGalleryNav() {
 
     $nav.append(`<div class="ia-section-title" style="padding: 4px 6px; margin-top: 10px;">Characters</div>`);
     chars.forEach(c => {
-        $nav.append(`<div class="ia-nav-char" data-char="${c}" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;"><i class="fa-solid fa-user"></i> ${c}</div>`);
+        $nav.append(`<div class="ia-nav-char" data-char="${escapeHtml(c)}" style="padding: 6px; cursor: pointer; border-radius: 4px; margin-bottom: 2px;"><i class="fa-solid fa-user"></i> ${escapeHtml(c)}</div>`);
     });
 
     $('.ia-nav-filter, .ia-nav-char').off('click').on('click', function () {
@@ -840,9 +901,26 @@ function renderGalleryContent(filterChar = null, filterType = null) {
         if (filterType === 'favorites') records = records.filter(r => r.favorite);
     }
 
+    // Text search across character name + description (case-insensitive).
+    const q = (galleryState.searchQuery || '').trim().toLowerCase();
+    if (q) {
+        records = records.filter(r =>
+            (r.character || '').toLowerCase().includes(q) ||
+            (r.description || '').toLowerCase().includes(q) ||
+            (r.reason || '').toLowerCase().includes(q)
+        );
+    }
+
     if (records.length === 0) {
-        $grid.append(`<div style="opacity: 0.6; padding: 20px; grid-column: 1 / -1; text-align: center;">No media found.</div>`);
+        const emptyMsg = q
+            ? `No media matching "${escapeHtml(q)}".`
+            : 'No media found.';
+        $grid.append(`<div style="opacity: 0.6; padding: 20px; grid-column: 1 / -1; text-align: center;">${emptyMsg}</div>`);
         return;
+    }
+
+    if (q) {
+        $grid.append(`<div class="ia-search-count">${records.length} result${records.length === 1 ? '' : 's'} for "${escapeHtml(q)}"</div>`);
     }
 
     let htmlStr = '';
@@ -850,10 +928,11 @@ function renderGalleryContent(filterChar = null, filterType = null) {
         const displayUrl = r.url || r.cleanUrl;
         const imageMarkup = displayUrl ? `<img src="${displayUrl}" loading="lazy" class="ia-clickable-img" />` : `<div style="background: #111; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;"><i class="fa-solid fa-image"></i></div>`;
         const heartClass = r.favorite ? "fa-solid fa-heart" : "fa-regular fa-heart";
-        const selClass = galleryState.selectedIds.has(r.id) ? "ia-selected" : "";
+        const selClass = galleryState.selectedIds.has(String(r.id)) ? "ia-selected" : "";
+        const descRaw = r.description || r.reason || 'No description';
 
         htmlStr += `
-            <div class="ia-card ${selClass}" data-id="${r.id}">
+            <div class="ia-card ${selClass}" data-id="${escapeHtml(r.id)}">
                 <div class="ia-card-sel-overlay"><i class="fa-solid fa-circle-check" style="color: #2ecc71; font-size: 3em; position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);"></i></div>
                 <div class="ia-card-img-wrap">
                     ${imageMarkup}
@@ -861,9 +940,9 @@ function renderGalleryContent(filterChar = null, filterType = null) {
                 </div>
                 <div class="ia-card-meta">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <b style="font-size: 0.88em;">${r.character}</b>
+                        <b style="font-size: 0.88em;">${escapeHtml(r.character)}</b>
                     </div>
-                    <div class="ia-desc-text" title="${(r.description || r.reason || '').replace(/"/g, '&quot;')}">${r.description || r.reason || 'No description'}</div>
+                    <div class="ia-desc-text" title="${escapeHtml(descRaw)}">${escapeHtml(descRaw)}</div>
                     <div class="ia-card-actions">
                         <button type="button" class="ia-card-btn ia-insert-roleplay-btn"><i class="fa-solid fa-comment-medical"></i> Insert</button>
                         <button type="button" class="ia-card-btn ia-expand-btn"><i class="fa-solid fa-expand"></i> View</button>
@@ -877,6 +956,13 @@ function renderGalleryContent(filterChar = null, filterType = null) {
 
     $grid.off('click', '.ia-clickable-img, .ia-expand-btn').on('click', '.ia-clickable-img, .ia-expand-btn', function(e) {
         e.preventDefault(); e.stopPropagation();
+
+        // Double-tap guard (mobile): ignore rapid repeated taps so a single
+        // accidental double press never opens/queues two lightboxes.
+        const now = Date.now();
+        if (now - lastGalleryTapAt < DOUBLE_TAP_GUARD_MS) return;
+        lastGalleryTapAt = now;
+
         const id = $(this).closest('.ia-card').attr('data-id');
 
         if (galleryState.selectionMode) {
@@ -884,7 +970,7 @@ function renderGalleryContent(filterChar = null, filterType = null) {
             return;
         }
 
-        const record = getGalleryDb().find(r => r.id === id);
+        const record = getGalleryDb().find(r => String(r.id) === String(id));
         if (record) openLightbox(record);
     });
 
@@ -899,7 +985,7 @@ function renderGalleryContent(filterChar = null, filterType = null) {
         e.preventDefault(); e.stopPropagation();
         if (galleryState.selectionMode) return;
         const id = $(this).closest('.ia-card').attr('data-id');
-        const r = getGalleryDb().find(x => x.id === id);
+        const r = getGalleryDb().find(x => String(x.id) === String(id));
         if (r) {
             await deliverRoleplayImage(r.url, r.description);
             $('#ia_gallery_modal').fadeOut(150);
