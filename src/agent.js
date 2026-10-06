@@ -16,13 +16,18 @@ import { waitForStIdle } from './stb.js';
 
 const AGENT_SYSTEM_PROMPT =
     'You are an expert anime and visual director generating precise image generation prompts for diffusion models. ' +
-    'Faithfully extract and preserve all character appearance details (hair color, hair style and length, eye color, facial features, body type, clothing, accessories) from the Character Reference. ' +
-    'Accurately capture the current scene depicted in the latest response (action, pose, expression, current clothing/attire, environment/setting, lighting, camera angle). ' +
-    'If the scene describes an outfit change or specific attire, depict that outfit; otherwise use the character reference outfit. ' +
-    'Respond ONLY with the requested JSON object.';
+    'Your absolute priority is CHARACTER FIDELITY: preserve every visual trait from the Character Reference verbatim — ' +
+    'hair color, hair style and length, eye color, skin tone, body type, bust/hips, height, distinguishing marks (scars, ' +
+    'tattoos, glasses, heterochromia), and default accessories. Never invent, swap, or paraphrase these traits. ' +
+    'If the Character Reference contains an [VISUAL APPEARANCE] block, treat it as the single source of truth and copy its ' +
+    'wording directly into the prompt. If a visual trait is missing from [VISUAL APPEARANCE] but present in [CHARACTER DESCRIPTION], ' +
+    'infer it from there. Only if a trait is completely absent should you fall back to generic conventions for that character archetype. ' +
+    'Accurately capture the current scene from the latest response (action, pose, expression, current clothing/attire, environment/setting, ' +
+    'lighting, camera angle). If the scene describes an outfit change or specific attire, depict that outfit; otherwise use the Character ' +
+    'Reference outfit. Respond ONLY with the requested JSON object.';
 
 const MAX_MSG_CHARS = 4000;
-const MAX_CHAR_DESC = 4000;
+const MAX_CHAR_DESC = 6000;
 const MAX_QUEUE = 3;
 const MODE2_KEY = 'illustration_agent_mode2';
 
@@ -116,7 +121,7 @@ export async function queryAgentLLM(prompt, signal = null) {
                 body: JSON.stringify({
                     model: s.customLlmModel,
                     messages: [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
-                    temperature: 0.2, max_tokens: 900 // Increased token limit for rich prompts
+                    temperature: 0.2, max_tokens: 900
                 })
             });
             if (!resp.ok) throw new Error(`Custom LLM HTTP ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
@@ -130,7 +135,7 @@ export async function queryAgentLLM(prompt, signal = null) {
         if (!s.connectionProfile) throw new Error('Pick a Connection Profile in the Evaluator section.');
         let svc = ctx.ConnectionManagerRequestService;
         if (!svc?.sendRequest) {
-            try { svc = (await import(new URL('/scripts/extensions/shared.js', location.origin).href)).ConnectionManagerRequestService; } catch (_) { /* handled below */ }
+            try { svc = (await import(new URL('/scripts/extensions/shared.js', location.origin).href)).ConnectionManagerRequestService; } catch (_) {}
         }
         if (!svc?.sendRequest) throw new Error('Connection Manager is not available in this SillyTavern.');
         const messages = [{ role: 'system', content: AGENT_SYSTEM_PROMPT }, { role: 'user', content: prompt }];
@@ -245,20 +250,78 @@ function findCharacter(ctx, msg) {
     return chars.length === 1 ? chars[0] : null;
 }
 
+// ---------------------------------------------------------------------------
+// FIX 1: Appearance-aware character extraction.
+// Many modern character cards ship a dedicated "appearance" field (Marinara
+// ecosystem, V2 character cards with a visual sheet, etc). We now look for it
+// under several naming conventions and mark it as the single source of truth.
+// If it is absent we fall back to the description, but we tag the block so the
+// LLM knows it must extract visual traits itself rather than paraphrase.
+// ---------------------------------------------------------------------------
+function pickAppearance(d, ch) {
+    const candidates = [
+        d?.appearance,
+        d?.character_appearance,
+        d?.visual_description,
+        d?.appearance_notes,
+        d?.extensions?.appearance,
+        d?.extensions?.visual,
+        d?.extensions?.character_sheet,
+        ch?.appearance
+    ];
+    for (const c of candidates) {
+        if (typeof c === 'string' && c.trim()) return c.trim();
+        if (c && typeof c === 'object') {
+            // Some ecosystems store { hair, eyes, body, outfit } style objects.
+            const flat = Object.entries(c)
+                .filter(([, v]) => typeof v === 'string' && v.trim())
+                .map(([k, v]) => `${k.replace(/[_-]+/g, ' ')}: ${v.trim()}`)
+                .join('\n');
+            if (flat) return flat;
+        }
+    }
+    return '';
+}
+
 function extractCharacterDetails(ch) {
     if (!ch) return '';
+    const d = ch.data || ch;
     const parts = [];
-    const desc = ch.data?.description || ch.description || '';
-    if (desc.trim()) parts.push(desc.trim());
 
-    const personality = ch.data?.personality || ch.personality || '';
-    if (personality.trim()) parts.push(`Personality & Traits:\n${personality.trim()}`);
+    // 1. Explicit visual appearance block — highest priority for the image LLM.
+    const appearance = pickAppearance(d, ch);
+    if (appearance) {
+        parts.push(`[VISUAL APPEARANCE — single source of truth for character design, copy verbatim]\n${appearance}`);
+    } else {
+        parts.push(
+            '[VISUAL APPEARANCE — no dedicated appearance field was found on this card]\n' +
+            'No explicit appearance data. Extract every visual trait you can find from the Character Description below ' +
+            'and use it verbatim. Do not invent traits that are not implied by the description.'
+        );
+    }
 
-    const scenario = ch.data?.scenario || ch.scenario || '';
-    if (scenario.trim()) parts.push(`Scenario & Setting:\n${scenario.trim()}`);
+    // 2. Description (may contain supplemental visual detail).
+    const desc = d.description || ch.description || '';
+    if (desc.trim()) parts.push(`[CHARACTER DESCRIPTION]\n${desc.trim()}`);
 
-    const tags = Array.isArray(ch.data?.tags) ? ch.data.tags.filter(Boolean).join(', ') : (ch.tags || '');
-    if (tags.trim()) parts.push(`Visual Tags:\n${tags.trim()}`);
+    // 3. Personality.
+    const personality = d.personality || ch.personality || '';
+    if (personality.trim()) parts.push(`[PERSONALITY & TRAITS — informs expression and posture only, not appearance]\n${personality.trim()}`);
+
+    // 4. Scenario.
+    const scenario = d.scenario || ch.scenario || '';
+    if (scenario.trim()) parts.push(`[SCENARIO & SETTING]\n${scenario.trim()}`);
+
+    // 5. Tags.
+    const tags = Array.isArray(d.tags) ? d.tags.filter(Boolean).join(', ') : (d.tags || ch.tags || '');
+    if (tags.trim()) parts.push(`[VISUAL TAGS]\n${tags.trim()}`);
+
+    // 6. mes_example / first_mes often contain the character's default outfit
+    //    described in prose — useful when appearance and description are thin.
+    if (!appearance) {
+        const first = d.first_mes || ch.first_mes || '';
+        if (first.trim()) parts.push(`[OPENING SCENE (for default outfit / environment cues only)]\n${truncate(first.trim(), 1200)}`);
+    }
 
     return parts.join('\n\n');
 }
@@ -266,16 +329,43 @@ function extractCharacterDetails(ch) {
 function extractUserDetails(ctx) {
     const name = ctx.name1 || 'User';
     const persona = ctx.persona || ctx.power_user?.persona_description || '';
-    if (!persona.trim()) return `User Name: ${name}`;
-    return `User (${name}) Reference:\n${truncate(persona.trim(), 800)}`;
+    if (!persona.trim()) return `User Name: ${name} (no persona description set)`;
+    // Raised the old 800-char cap — personas often describe the user's outfit and body.
+    return `User (${name}) Reference:\n${truncate(persona.trim(), 2000)}`;
+}
+
+// ---------------------------------------------------------------------------
+// FIX 2: Reasoning-aware message compaction.
+// Modern reasoning models in SillyTavern store chain-of-thought in
+// message.extra.reasoning (and variants) instead of inline <think>...</think>
+// tags. The old code only stripped inline tags, so the includeThinking toggle
+// had nothing to work with. We now:
+//   * pull extra.reasoning / reasoning_content / thinking when includeThinking is on
+//   * keep inline <think> blocks when includeThinking is on
+//   * strip both when includeThinking is off
+// ---------------------------------------------------------------------------
+function getReasoning(m) {
+    const ex = m?.extra || {};
+    return String(
+        ex.reasoning || ex.reasoning_content || ex.reasoning_text || ex.thinking || ''
+    ).trim();
 }
 
 function compact(m, s, ctx) {
     let t = cleanTriggerTags(m.mes || '');
-    if (!s.includeThinking) t = stripThinkingTags(t);
+    if (s.includeThinking) {
+        const reasoning = getReasoning(m);
+        if (reasoning) {
+            t = `[Inner reasoning]\n${reasoning}\n\n[Visible reply]\n${t}`;
+        }
+        // inline <think> blocks are intentionally left intact when includeThinking is on
+    } else {
+        t = stripThinkingTags(t);
+    }
     t = stripImageMarkdown(t);
     const speaker = m.name || (m.is_user ? (ctx?.name1 || 'User') : 'Assistant');
-    return `${speaker}: ${truncate(t, 2500)}`;
+    const cap = s.includeThinking ? 3500 : 2500;
+    return `${speaker}: ${truncate(t, cap)}`;
 }
 
 function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
@@ -303,6 +393,11 @@ function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
 [CHARACTER REFERENCE]
 Primary Character: ${ch?.name || msg.name || 'Character'}
 ${truncate(charDesc, MAX_CHAR_DESC)}
+
+FIDELITY RULES (mandatory):
+- Treat the [VISUAL APPEARANCE] block as authoritative. Copy hair color, eye color, hair length/style, body type, skin tone and any distinguishing marks from it word-for-word into the prompt.
+- If a required visual trait is not listed in [VISUAL APPEARANCE], check the [CHARACTER DESCRIPTION] and [VISUAL TAGS] blocks before falling back on generic conventions.
+- Never swap hair color, eye color, or body type for a different value just because the scene mood changed.
 
 [USER REFERENCE]
 ${userDesc}
@@ -377,8 +472,6 @@ async function evaluate({ idx, tags, force }) {
         msg.extra.ia_sig = sig;
     }
 
-    // FIXED: Never overwrite the user's custom prompt with promptMode3 on manual illustrations.
-    // Always use the prompt schema that matches the active agent mode.
     const schema = { mode1: s.promptMode1, mode2: s.promptMode2, mode3: s.promptMode3 }[mode] || s.promptMode1;
     const tagsMode = force && tags.has ? 'forced-tags' : mode;
 
@@ -398,8 +491,8 @@ async function evaluate({ idx, tags, force }) {
             result = resultFromTags(tags);
         } else {
             const fullPrompt = buildPrompt({ schema, ctx, chat, idx, msg, tags, mode: tagsMode });
-	    console.log('[Illustration Agent Prompt Sent]', fullPrompt); // Prints the exact character card & context to your log
-	    const raw = await queryAgentLLM(fullPrompt, ac.signal);
+            console.log('[Illustration Agent Prompt Sent]', fullPrompt);
+            const raw = await queryAgentLLM(fullPrompt, ac.signal);
             if (myToken !== runToken || getCtx().chatId !== target.chatId) return;       
             try { result = parseAgentResult(raw); }
             catch (parseErr) {
