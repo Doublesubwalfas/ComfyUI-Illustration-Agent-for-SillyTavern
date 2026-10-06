@@ -3,7 +3,7 @@ import { getSettings, saveGalleryRecord } from './config.js';
 export function getEffectiveComfyUrl() {
     const s = getSettings();
     let url = (s.comfyUrl || 'http://127.0.0.1:8188').replace(/\/+$/, '');
-    if (!s.comfyRewriteHost) return url;
+    if (!s.comfyRewriteHost) return url;   // opt-in only
 
     try {
         const parsed = new URL(url);
@@ -11,7 +11,7 @@ export function getEffectiveComfyUrl() {
         const pageLocal = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
         if (isLocal && !pageLocal) {
             parsed.hostname = window.location.hostname;
-            return parsed.origin + parsed.pathname;
+            return parsed.origin;
         }
     } catch (e) {
         console.warn('[Illustration Agent] URL parsing error', e);
@@ -26,10 +26,7 @@ async function uploadToSillyTavernServer(imgBlob, filename) {
         const resp = await fetch('/api/files/upload', { method: 'POST', body: formData });
         if (resp.ok) {
             const data = await resp.json();
-            const filePath = data.path || data.url || data.file || (Array.isArray(data) && data[0]?.path) || null;
-            if (filePath) {
-                return filePath.startsWith('http') ? filePath : `/${filePath.replace(/^\/+/, '')}`;
-            }
+            if (data && data.path) return data.path;
         }
     } catch (e) {
         console.warn('[Illustration Agent] /api/files/upload failed', e);
@@ -37,6 +34,9 @@ async function uploadToSillyTavernServer(imgBlob, filename) {
     return null;
 }
 
+// Macro substitution at leaf values only (never inside key names or JSON syntax).
+// Numeric macros are injected as REAL JSON numbers (not quoted strings) so
+// ComfyUI's server-side type validation accepts them.
 function substituteWorkflow(rawText, params) {
     let parsed;
     try {
@@ -74,7 +74,9 @@ function substituteWorkflow(rawText, params) {
             return out;
         }
         if (typeof node === 'string') {
+            // Exact macro leaf: preserve the native type (number stays number).
             if (Object.prototype.hasOwnProperty.call(subs, node)) return subs[node];
+            // Embedded macro inside a larger string: stringify the value.
             let result = node;
             for (const macro in subs) {
                 if (result.includes(macro)) result = result.split(macro).join(String(subs[macro]));
@@ -156,8 +158,6 @@ export async function generateComfyImage(positive, negative, width, height, meta
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: workflow }),
         signal
-    }).catch(err => {
-        throw new Error(`Network Error (${err.message}): Cannot reach ComfyUI at ${comfyBaseUrl}. If you are on mobile using an HTTPS tunnel, direct IPs may be blocked.`);
     });
 
     if (!resp.ok) {
@@ -178,6 +178,7 @@ export async function generateComfyImage(positive, negative, width, height, meta
     const serverPath = await uploadToSillyTavernServer(imgBlob, filename);
     if (serverPath) finalCleanUrl = serverPath;
 
+    // NOTE: base64Backup intentionally omitted (localStorage quota).
     saveGalleryRecord({
         id: Date.now() + Math.random().toString(36).substr(2, 4),
         character: SillyTavern.getContext().characters?.[SillyTavern.getContext().characterId]?.name || 'Unknown',
