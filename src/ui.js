@@ -32,7 +32,7 @@ function buildHtml() {
       <b><i class="fa-solid fa-palette" style="color:#ff7675;margin-right:6px"></i>Illustration Agent</b>
       <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
-    <div class="inline-drawer-content">
+    <div class="inline-drawer-content" style="display:none;">
 
       <div class="ia-topbar">
         ${chk('enabled', '<b>Enabled</b>', 'Master switch')}
@@ -156,7 +156,7 @@ function buildHtml() {
 }
 
 // ---------------------------------------------------------------------------
-// Declarative binding: <input data-ia="key"> <-> settings[key]
+// Declarative binding
 // ---------------------------------------------------------------------------
 function readValue(el) {
     const type = el.dataset.type || (el.type === 'checkbox' ? 'bool' : 'text');
@@ -211,20 +211,34 @@ function refreshVisibility() {
 }
 
 function refreshProfiles() {
-    const s = getSettings();
-    const ctx = getCtx();
-    let profiles = [];
-    try { profiles = ctx.ConnectionManagerRequestService?.getSupportedProfiles?.() || []; } catch (_) { /* fall back below */ }
-    if (!profiles.length) profiles = ctx.extensionSettings?.connectionManager?.profiles || [];
-    const $sel = $('[data-ia="connectionProfile"]').empty().append('<option value="">(none)</option>');
-    profiles.forEach(p => $sel.append(`<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}</option>`));
-    $sel.val(s.connectionProfile || '');
+    try {
+        const s = getSettings();
+        const ctx = getCtx();
+        let profiles = [];
+        try { profiles = ctx.ConnectionManagerRequestService?.getSupportedProfiles?.() || []; } catch (_) {}
+        if (!profiles.length) {
+            const raw = ctx.extensionSettings?.connectionManager?.profiles;
+            profiles = Array.isArray(raw) ? raw : (raw && typeof raw === 'object' ? Object.values(raw) : []);
+        }
+        const $sel = $('[data-ia="connectionProfile"]').empty().append('<option value="">(none)</option>');
+        if (Array.isArray(profiles)) {
+            profiles.forEach(p => {
+                if (p && (p.id || p.name)) $sel.append(`<option value="${escapeHtml(p.id || p.name)}">${escapeHtml(p.name || p.id)}</option>`);
+            });
+        }
+        $sel.val(s.connectionProfile || '');
+    } catch (e) {
+        console.warn('[Illustration Agent] Failed to refresh profiles', e);
+    }
 }
 
 // ---- prompt editor (per mode) ------------------------------------------------
-const schemaKey = () => ({ mode1: 'promptMode1', mode2: 'promptMode2', mode3: 'promptMode3' }[getSettings().agentMode]);
+const schemaKey = () => ({ mode1: 'promptMode1', mode2: 'promptMode2', mode3: 'promptMode3' }[getSettings().agentMode] || 'promptMode1');
 
-function loadSchema() { $('#ia_schema').val(getSettings()[schemaKey()]); updateBadges(); }
+function loadSchema() { 
+    $('#ia_schema').val(getSettings()[schemaKey()]); 
+    updateBadges(); 
+}
 
 function badge(label, ok, hint) {
     return `<span class="ia-badge ${ok ? 'active' : 'inactive'}" title="${escapeHtml(hint)}">${ok ? '✓' : '✗'} ${escapeHtml(label)}</span>`;
@@ -246,7 +260,7 @@ function updateBadges() {
 function refreshPresets() {
     const s = getSettings();
     $('#ia_wf_select').empty();
-    Object.keys(s.workflowPresets).forEach(n => $('#ia_wf_select').append(`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`));
+    Object.keys(s.workflowPresets || {}).forEach(n => $('#ia_wf_select').append(`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`));
     $('#ia_wf_select').val(s.selectedWorkflowPreset);
     $('#ia_wf_text').val(s.activeWorkflowText);
 }
@@ -291,17 +305,37 @@ function bindWorkflow() {
 // ---------------------------------------------------------------------------
 export function setupUI() {
     if ($('#ia_main_container').length) return;
-    const host = $('#extensions_settings2').length ? $('#extensions_settings2') : $('#extensions_settings');
-    host.append(buildHtml());
 
-    initDialogs();
-    initGallery();
-    bindFields();
-    bindWorkflow();
-    refreshPresets();
-    refreshProfiles();
-    refreshVisibility();
-    loadSchema();
+    // Guaranteed mount target: prioritizes standard visible panel
+    let $host = $('#ia_settings_mount');
+    if (!$host.length) $host = $('#extensions_settings');
+    if (!$host.length) $host = $('#extensions_settings2');
+
+    if (!$host.length) {
+        // DOM not ready yet, retry in 200ms
+        setTimeout(setupUI, 200);
+        return;
+    }
+
+    $host.append(buildHtml());
+
+    // Drawer toggle click listener
+    $('#ia_main_container .inline-drawer-toggle').off('click').on('click', function (e) {
+        e.stopPropagation();
+        const $content = $(this).next('.inline-drawer-content');
+        const $icon = $(this).find('.inline-drawer-icon');
+        $content.slideToggle(200);
+        $icon.toggleClass('down up');
+    });
+
+    try { initDialogs(); } catch (e) { console.warn(e); }
+    try { initGallery(); } catch (e) { console.warn(e); }
+    try { bindFields(); } catch (e) { console.warn(e); }
+    try { bindWorkflow(); } catch (e) { console.warn(e); }
+    try { refreshPresets(); } catch (e) { console.warn(e); }
+    try { refreshProfiles(); } catch (e) { console.warn(e); }
+    try { refreshVisibility(); } catch (e) { console.warn(e); }
+    try { loadSchema(); } catch (e) { console.warn(e); }
 
     const s = getSettings();
     $('#ia_schema').on('input', function () { s[schemaKey()] = $(this).val(); saveSettings(); updateBadges(); });
