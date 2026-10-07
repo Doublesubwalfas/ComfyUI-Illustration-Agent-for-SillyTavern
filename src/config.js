@@ -100,6 +100,8 @@ export const DEFAULT_AGENT_SYSTEM_PROMPT =
 
 CHARACTER FIDELITY IS THE HIGHEST PRIORITY.
 - Multiple characters may be present. Only depict the characters who are EXPLICITLY in the scene (named, speaking, acting, or directly described as physically present).
+- The USER / PLAYER CHARACTER is provided in the USER REFERENCE section. Treat them as a full character: include them in the prompt whenever they appear in the scene (speaking, acting, being addressed, physically described, or interacting with the character), and copy their appearance traits from their [VISUAL APPEARANCE] block verbatim — same fidelity rules as the character cards.
+- If the user is not in the scene, do NOT add them merely because they exist.
 - For each depicted character, preserve their visual traits VERBATIM: hair color, hair style and length, eye color, skin tone, body type, bust/hips, height, distinguishing marks (scars, tattoos, glasses, heterochromia), and default accessories. Never swap or paraphrase traits across characters.
 - If a character has a [VISUAL APPEARANCE] block, treat it as the single source of truth and copy its wording into the prompt.
 - If a visual trait is missing there but present in [DESCRIPTION] or [VISUAL TAGS], infer from that. Only fall back to generic conventions if a trait is genuinely absent.
@@ -121,7 +123,7 @@ FIDELITY RULES (mandatory):
 - Never blend traits between characters (do not give one character another's hair color, eye color, outfit, etc.).
 - Match the current outfit, pose, expression, action, environment, lighting and camera angle from the scene below.
 
-[USER REFERENCE]
+[USER REFERENCE — this is the player character. Include them whenever they appear in the scene, with the same fidelity rules.]
 {{userReference}}
 
 [RECENT CONTEXT (for continuity)]
@@ -221,7 +223,16 @@ function migrate(s) {
             }
         }
     }
-    s.version = 4;
+    if ((s.version || 4) < 5) {
+        // v5: the user / persona is now offered as a first-class character.
+        // Only auto-replace prompts the user hasn't customized (detected by
+        // the absence of the new marker phrases).
+        const sysCustom = s.agentSystemPrompt && !s.agentSystemPrompt.includes('The USER / PLAYER CHARACTER is provided');
+        const tplCustom = s.userPromptTemplate && !s.userPromptTemplate.includes('[USER REFERENCE — this is the player character');
+        if (!sysCustom) s.agentSystemPrompt = DEFAULT_AGENT_SYSTEM_PROMPT;
+        if (!tplCustom) s.userPromptTemplate = DEFAULT_USER_PROMPT_TEMPLATE;
+    }
+    s.version = 5;
 }
 
 export function getSettings() {

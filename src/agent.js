@@ -375,12 +375,23 @@ function buildCharactersBlock(characters, speaker) {
     }).join('\n\n');
 }
 
+// ---------------------------------------------------------------------------
+// The user / persona is offered to the LLM as a first-class CHARACTER (not a
+// vague "reference"), so the evaluator actually depicts them when the scene
+// includes them. Format mirrors buildCharactersBlock() so the fidelity rules
+// apply to the user too.
+// ---------------------------------------------------------------------------
 function extractUserDetails(ctx) {
     const name = ctx.name1 || 'User';
-    const persona = ctx.persona || ctx.power_user?.persona_description || '';
-    if (!persona.trim()) return `User Name: ${name} (no persona description set)`;
-    // Raised the old 800-char cap — personas often describe the user's outfit and body.
-    return `User (${name}) Reference:\n${truncate(persona.trim(), 2000)}`;
+    const persona = (ctx.persona || ctx.power_user?.persona_description || '').trim();
+    const lines = [`### ${name}  ← THE USER / PLAYER CHARACTER (include them whenever they appear in the scene)`];
+    if (persona) {
+        lines.push('[VISUAL APPEARANCE — copy traits verbatim]');
+        lines.push(truncate(persona, 2000));
+    } else {
+        lines.push('[VISUAL APPEARANCE — no persona description set. If the user is in the scene, depict them generically based on the scene text.]');
+    }
+    return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
