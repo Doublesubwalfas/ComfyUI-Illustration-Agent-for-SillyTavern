@@ -218,28 +218,50 @@ export function turnsSinceIllustration(chat, idx) {
     return Infinity;
 }
 
-function findCharacter(ctx, msg) {
+// ---------------------------------------------------------------------------
+// Character resolution. ONLY cards that belong to the current chat are eligible.
+// ctx.characters is the user's WHOLE library; never search it freely, or an
+// unrelated card whose name appears in the text (or who shares a name) gets used.
+// ---------------------------------------------------------------------------
+const lc = (v) => String(v ?? '').trim().toLowerCase();
+const avatarOf = (c) => c?.avatar || c?.data?.avatar || '';
+
+// The card(s) that actually belong to this chat: the group's members, or the one open character.
+function chatRoster(ctx) {
     const chars = ctx.characters || [];
-    if (!chars.length) return null;
-    if (msg.original_avatar) {
-        const c = chars.find(x => x.avatar === msg.original_avatar || x.data?.avatar === msg.original_avatar);
+    const roster = [];
+    const push = (c) => { if (c && !roster.includes(c)) roster.push(c); };
+
+    const groupId = ctx.groupId ?? ctx.selected_group;
+    const group = groupId != null && groupId !== ''
+        ? (ctx.groups || []).find(g => String(g.id) === String(groupId)) : null;
+    if (group) {
+        for (const m of (group.members || [])) {
+            push(typeof m === 'string'
+                ? chars.find(x => x.avatar === m || x.data?.avatar === m)
+                : chars.find(x => x.avatar === m?.avatar) || null);
+        }
+        return roster;
+    }
+    // Solo chat: characterId is an INDEX into ctx.characters (number or numeric string).
+    const raw = ctx.characterId ?? ctx.this_chid;
+    const i = raw === '' || raw == null ? NaN : Number(raw);
+    if (Number.isInteger(i) && chars[i]) push(chars[i]);
+    return roster;
+}
+
+function findCharacter(ctx, msg) {
+    const roster = chatRoster(ctx);
+    if (msg?.original_avatar) {
+        const c = roster.find(x => avatarOf(x) === msg.original_avatar);
         if (c) return c;
     }
-    if (msg.name) {
-        const msgName = msg.name.trim().toLowerCase();
-        const c = chars.find(x =>
-            (x.name && x.name.trim().toLowerCase() === msgName) ||
-            (x.data?.name && x.data.name.trim().toLowerCase() === msgName)
-        );
+    const n = lc(msg?.name);
+    if (n) {
+        const c = roster.find(x => lc(x.name) === n || lc(x.data?.name) === n);
         if (c) return c;
     }
-    const chId = ctx.characterId ?? ctx.this_chid;
-    if (chId != null) {
-        if (typeof chId === 'number' && chars[chId]) return chars[chId];
-        const c = chars.find(x => x.id === chId || x.avatar === chId || String(x.name).toLowerCase() === String(chId).toLowerCase());
-        if (c) return c;
-    }
-    return chars.length === 1 ? chars[0] : null;
+    return roster.length === 1 ? roster[0] : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -275,58 +297,25 @@ function pickAppearance(d, ch) {
     return '';
 }
 
-// All characters who could plausibly be on-screen right now.
+// Characters who could be on-screen: members of THIS chat only.
 function findRelevantCharacters(ctx, chat, idx, msg) {
-    const chars = ctx.characters || [];
-    if (!chars.length) return [];
+    const roster = chatRoster(ctx);
+    if (!roster.length) return [];
+    if (roster.length === 1) return roster;          // solo chat: exactly the open card
 
-    const byKey = new Map();
-    const add = (c) => {
-        if (!c) return;
-        const k = c.avatar || c.data?.avatar || c.name;
-        if (k) byKey.set(k, c);
-    };
-    const byAvatar = (id) => chars.find(x => x.avatar === id || x.data?.avatar === id);
-    const byName = (n) => {
-        const want = String(n || '').trim().toLowerCase();
-        if (!want) return null;
-        return chars.find(x =>
-            (x.name || '').trim().toLowerCase() === want ||
-            (x.data?.name || '').trim().toLowerCase() === want
-        );
-    };
-
-    // Active solo character
-    const activeId = ctx.characterId ?? ctx.this_chid;
-    if (activeId != null) add(byAvatar(activeId) || byName(activeId));
-
-    // Active group members
-    const groupId = ctx.groupId ?? ctx.selected_group;
-    const group = (ctx.groups || []).find(g => String(g.id) === String(groupId));
-    const members = ctx.groupMembers || group?.members || [];
-    for (const m of members) {
-        if (typeof m === 'string') add(byAvatar(m) || byName(m));
-        else if (m && typeof m === 'object') add(m.avatar ? (byAvatar(m.avatar) || m) : m);
-    }
-
-    // Speaker of the current message (always include)
-    if (msg?.name) add(byAvatar(msg.original_avatar) || byName(msg.name));
-
-    // Anyone explicitly named in the last few messages (probably in the scene)
-    const recent = chat.slice(Math.max(0, idx - 3), idx + 1);
-    const sceneText = recent.map(m => m.mes || '').join('\n').toLowerCase();
-    for (const c of chars) {
-        if (!c.name) continue;
-        const key = c.avatar || c.data?.avatar || c.name;
-        if (byKey.has(key)) continue;
-        const needle = c.name.trim().toLowerCase();
-        if (needle.length < 3) continue;
+    // Group chat: speaker first, then members named in the last few messages.
+    const out = [];
+    const speaker = findCharacter(ctx, msg);
+    if (speaker) out.push(speaker);
+    const sceneText = chat.slice(Math.max(0, idx - 3), idx + 1).map(m => m.mes || '').join('\n');
+    for (const c of roster) {
+        if (out.includes(c)) continue;
+        const needle = lc(c.name);
+        if (needle.length < 2) continue;
         const esc = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const re = new RegExp(`(?:^|[^\\p{L}])${esc}(?:$|[^\\p{L}])`, 'iu');
-        if (re.test(sceneText)) add(c);
+        if (new RegExp(`(?:^|[^\\p{L}])${esc}(?:$|[^\\p{L}])`, 'iu').test(sceneText)) out.push(c);
     }
-
-    return [...byKey.values()];
+    return out.length ? out : roster;
 }
 
 // One block per character. Speaker is explicitly flagged so the LLM knows the focus.
@@ -383,7 +372,7 @@ function buildCharactersBlock(characters, speaker) {
 // ---------------------------------------------------------------------------
 function extractUserDetails(ctx) {
     const name = ctx.name1 || 'User';
-    const persona = (ctx.persona || ctx.power_user?.persona_description || '').trim();
+    const persona = String(ctx.powerUserSettings?.persona_description ?? ctx.persona ?? ctx.power_user?.persona_description ?? '').trim();
     const lines = [`### ${name}  ← THE USER / PLAYER CHARACTER (include them whenever they appear in the scene)`];
     if (persona) {
         lines.push('[VISUAL APPEARANCE — copy traits verbatim]');
@@ -440,6 +429,7 @@ function buildPrompt({ schema, ctx, chat, idx, msg, tags, mode }) {
     const recent = chat.slice(Math.max(0, idx - look), idx);
     const characters = findRelevantCharacters(ctx, chat, idx, msg);
     const speaker = msg.name || characters[0]?.name || 'Character';
+    console.log('[Illustration Agent] characters in prompt:', characters.map(c => `${c.name} (${avatarOf(c)})`));
     const userDesc = extractUserDetails(ctx);
 
     let tagBlock = '';
